@@ -22,7 +22,9 @@ A local, privacy-first audio transcription desktop app built on [whisper.cpp](ht
 
 Download the latest installer from the [Releases](../../releases) page and run it. No dependencies to install manually — the app handles everything on first launch (~1.6 GB download: Vulkan-accelerated whisper.cpp binary + FFmpeg + large-v3-turbo model).
 
-> Files are stored in `%USERPROFILE%\.whisper-app` and are preserved across uninstalls.
+> **Windows SmartScreen warning:** Because the installer isn't code-signed yet, Windows may show "Windows protected your PC". Click **More info → Run anyway** to proceed — the app is safe.
+
+> Files are stored in `%USERPROFILE%\.whisper-app` and are preserved across uninstalls. The uninstaller will offer to delete them if you want a clean removal.
 
 ## Usage
 
