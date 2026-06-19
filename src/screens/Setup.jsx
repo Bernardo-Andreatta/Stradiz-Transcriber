@@ -21,10 +21,14 @@ export default function Setup({ onReady }) {
     window.api.setup.onGpu(setGpu)
     window.api.setup.onProgress((d) => setProgress(prev => ({ ...prev, [d.task]: d })))
     window.api.setup.onDone((cfg) => {
-      setDone(true)
-      setStatus('Ready!')
       setDownloading(false)
-      onReady(cfg)
+      if (cfg.ready === false) {
+        setDone(false)
+      } else {
+        setDone(true)
+        setStatus('Ready!')
+        onReady(cfg)
+      }
     })
     // Check current status immediately
     window.api.setup.check().then(res => {

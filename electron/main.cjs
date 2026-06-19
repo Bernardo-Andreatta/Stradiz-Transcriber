@@ -43,8 +43,14 @@ function findExeInDir(dir, name) {
   return null
 }
 
+const WHISPER_GPU_FLAG = path.join(APP_DATA, 'whisper_gpu.txt')
+
 function getWhisperCli() {
   return findExeInDir(WHISPER_DIR, 'whisper-cli.exe') || path.join(WHISPER_DIR, 'whisper-cli.exe')
+}
+
+function getWhisperHasGpu() {
+  try { return fs.readFileSync(WHISPER_GPU_FLAG, 'utf8').trim() === '1' } catch { return false }
 }
 
 function getFFmpeg() {
@@ -133,27 +139,55 @@ async function setupWhisper(win) {
 
   // Download whisper-cli if needed
   if (needsWhisper) {
-    send('setup:status', 'Fetching latest Whisper release info...')
     try {
-      const release = await fetchJson('https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest')
-      const assets = release.assets || []
-      // Prefer Vulkan build (works on AMD, NVIDIA, Intel), fall back to generic x64
-      const asset =
-        assets.find(a => /vulkan/i.test(a.name) && /x64/i.test(a.name) && a.name.endsWith('.zip')) ||
-        assets.find(a => /x64/i.test(a.name) && a.name.endsWith('.zip') && !/cuda|cublas/i.test(a.name)) ||
-        assets.find(a => a.name.endsWith('.zip'))
-      if (asset) {
-        send('setup:status', `Downloading Whisper ${release.tag_name} (${asset.name})...`)
-        const zipPath = path.join(APP_DATA, 'whisper.zip')
-        await downloadFile(asset.browser_download_url, zipPath,
-          (pct, rcv, total) => send('setup:progress', { task: 'whisper', pct, rcv, total })
-        )
-        send('setup:status', 'Extracting Whisper...')
-        fs.mkdirSync(WHISPER_DIR, { recursive: true })
-        execSync(`powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${WHISPER_DIR}' -Force"`)
-        fs.unlinkSync(zipPath)
+      // First try our own Vulkan build (GPU-accelerated, works on AMD/NVIDIA/Intel via Vulkan)
+      const vulkanUrl = 'https://github.com/Bernardo-Andreatta/Stradiz-Transcriber/releases/download/v1.0.0/whisper-vulkan-bin-x64.zip'
+      let downloadUrl = null
+      let assetName = null
+      let hasGpu = false
+
+      send('setup:status', 'Checking Whisper Vulkan build availability...')
+      try {
+        // HEAD request to verify it exists
+        await new Promise((resolve, reject) => {
+          const req = require('https').request(vulkanUrl, { method: 'HEAD' }, res => {
+            if (res.statusCode === 200 || res.statusCode === 302 || res.statusCode === 301) resolve()
+            else reject(new Error(`HTTP ${res.statusCode}`))
+          })
+          req.on('error', reject)
+          req.end()
+        })
+        downloadUrl = vulkanUrl
+        assetName = 'whisper-vulkan-bin-x64.zip'
+        hasGpu = true
+      } catch {
+        // Fall back to plain CPU build from official release
+        send('setup:status', 'Fetching latest Whisper release info...')
+        const release = await fetchJson('https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest')
+        const assets = release.assets || []
+        const asset =
+          assets.find(a => a.name === 'whisper-bin-x64.zip') ||
+          assets.find(a => /x64/i.test(a.name) && a.name.endsWith('.zip') && !/cuda|cublas|blas/i.test(a.name))
+        if (!asset) throw new Error('No suitable Whisper binary found in release')
+        downloadUrl = asset.browser_download_url
+        assetName = asset.name
+        hasGpu = false
+      }
+
+      send('setup:status', `Downloading Whisper (${assetName})...`)
+      const zipPath = path.join(APP_DATA, 'whisper.zip')
+      await downloadFile(downloadUrl, zipPath,
+        (pct, rcv, total) => send('setup:progress', { task: 'whisper', pct, rcv, total })
+      )
+      send('setup:status', 'Extracting Whisper...')
+      fs.mkdirSync(WHISPER_DIR, { recursive: true })
+      execSync(`tar -xf "${zipPath}" -C "${WHISPER_DIR}"`, { stdio: 'pipe' })
+      fs.unlinkSync(zipPath)
+      const extractedCli = findExeInDir(WHISPER_DIR, 'whisper-cli.exe')
+      if (!extractedCli) {
+        send('setup:status', 'Extraction failed — whisper-cli.exe not found after extracting. Please retry setup.')
       } else {
-        send('setup:status', 'No suitable Whisper binary found in release. Please report this issue.')
+        fs.writeFileSync(WHISPER_GPU_FLAG, hasGpu ? '1' : '0')
       }
     } catch (e) {
       send('setup:status', `Failed to download Whisper: ${e.message}`)
@@ -162,22 +196,30 @@ async function setupWhisper(win) {
 
   // Download ffmpeg if needed
   if (needsFfmpeg) {
-    send('setup:status', 'Downloading ffmpeg...')
-    const ffmpegZip = path.join(APP_DATA, 'ffmpeg.zip')
-    await downloadFile(
-      'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
-      ffmpegZip,
-      (pct, rcv, total) => send('setup:progress', { task: 'ffmpeg', pct, rcv, total })
-    )
-    send('setup:status', 'Extracting ffmpeg...')
-    execSync(`powershell -Command "Expand-Archive '${ffmpegZip}' -DestinationPath '${FFMPEG_DIR}' -Force"`)
-    // Move bin folder up
-    const inner = fs.readdirSync(FFMPEG_DIR).find(f => f.startsWith('ffmpeg'))
-    if (inner) {
-      const innerPath = path.join(FFMPEG_DIR, inner)
-      fs.cpSync(innerPath, FFMPEG_DIR, { recursive: true })
+    try {
+      send('setup:status', 'Downloading ffmpeg...')
+      const ffmpegZip = path.join(APP_DATA, 'ffmpeg.zip')
+      await downloadFile(
+        'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+        ffmpegZip,
+        (pct, rcv, total) => send('setup:progress', { task: 'ffmpeg', pct, rcv, total })
+      )
+      send('setup:status', 'Extracting ffmpeg...')
+      fs.mkdirSync(FFMPEG_DIR, { recursive: true })
+      execSync(`tar -xf "${ffmpegZip}" -C "${FFMPEG_DIR}"`, { stdio: 'pipe' })
+      // Flatten the inner versioned folder so bin/ffmpeg.exe is directly under FFMPEG_DIR
+      const inner = fs.readdirSync(FFMPEG_DIR).find(f => f.startsWith('ffmpeg'))
+      if (inner) {
+        const innerPath = path.join(FFMPEG_DIR, inner)
+        fs.cpSync(innerPath, FFMPEG_DIR, { recursive: true })
+        fs.rmSync(innerPath, { recursive: true, force: true })
+      }
+      fs.unlinkSync(ffmpegZip)
+      const ffmpegExe = getFFmpeg()
+      if (!ffmpegExe) send('setup:status', 'Extraction failed — ffmpeg.exe not found after extracting. Please retry setup.')
+    } catch (e) {
+      send('setup:status', `Failed to set up ffmpeg: ${e.message}`)
     }
-    fs.unlinkSync(ffmpegZip)
   }
 
   // Download model if needed
@@ -202,7 +244,13 @@ async function setupWhisper(win) {
     )
   }
 
-  send('setup:done', { whisperCli: getWhisperCli(), ffmpeg: getFFmpeg(), model: getModel(), vadModel: getVadModel(), gpu })
+  const finalCli = getWhisperCli()
+  const finalFfmpeg = getFFmpeg()
+  const finalModel = getModel()
+  const finalVad = getVadModel()
+  const allReady = fs.existsSync(finalCli) && !!finalFfmpeg && fs.existsSync(finalModel) && fs.existsSync(finalVad)
+  if (!allReady) send('setup:status', 'Setup incomplete — one or more components failed to install. Click Setup again to retry.')
+  send('setup:done', { whisperCli: finalCli, ffmpeg: finalFfmpeg, model: finalModel, vadModel: finalVad, gpu, whisperHasGpu: getWhisperHasGpu(), ready: allReady })
 }
 
 let mainWindow
@@ -263,6 +311,7 @@ ipcMain.handle('setup:check', async () => {
     model,
     vadModel,
     gpu,
+    whisperHasGpu: getWhisperHasGpu(),
   }
 })
 
@@ -337,15 +386,24 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
     const finalTxt = path.join(outDir, base + '.txt')
 
     // Convert to silence-removed wav once — kept for all recovery passes
+    if (!ffmpegExe || !fs.existsSync(ffmpegExe)) {
+      send('transcribe:file', { file: filePath, status: 'error', error: 'ffmpeg not found — please re-run Setup' })
+      continue
+    }
     send('transcribe:file', { file: filePath, status: 'converting' })
-    await new Promise((resolve, reject) => {
+    const convertOk = await new Promise(resolve => {
       const silenceFilter = config.removeSilence
         ? ['-af', 'silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-50dB']
         : []
       const ff = spawn(ffmpegExe, ['-i', filePath, ...silenceFilter,
         '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath, '-y'])
-      ff.on('close', code => code === 0 ? resolve() : reject(new Error('ffmpeg failed')))
+      ff.on('close', code => resolve(code === 0))
+      ff.on('error', () => resolve(false))
     })
+    if (!convertOk) {
+      send('transcribe:file', { file: filePath, status: 'error', error: 'ffmpeg conversion failed' })
+      continue
+    }
 
     send('transcribe:file', { file: filePath, status: 'transcribing' })
 
@@ -371,21 +429,24 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
 
       const runLines = []
       let hallucinationAtMs = null
+      let whisperExitCode = null
 
       await new Promise(resolve => {
-        const gpuArgs = config.gpu !== 'cpu' ? ['-dev', '0'] : ['-ng']
-        const proc = spawn(whisperCli, [
-          '-m', model, '-l', 'pt', '-f', segWav,
+        // Vulkan build auto-detects GPU; only pass -ng to force CPU when no GPU build
+        const gpuArgs = config.whisperHasGpu ? [] : ['-ng']
+        const args = ['-m', model, '-l', 'pt', '-f', segWav,
           '--no-speech-thold', '0.3', '--entropy-thold', '2.8',
-          '--no-fallback', '--print-progress', ...gpuArgs,
-        ])
+          '--no-fallback', '--print-progress', '-nfa', ...gpuArgs]
+        const proc = spawn(whisperCli, args)
         currentProc = proc
 
+        let rawOutput = ''
         const seen = new Set()
         const recentTexts = []
         let hallucinationDetected = false
 
         const processChunk = (text) => {
+          rawOutput += text
           const lineRegex = /\[(\d+:\d+(?::\d+)?\.\d+) --> (\d+:\d+(?::\d+)?\.\d+)\]\s+(.+)/g
           let m
           while ((m = lineRegex.exec(text)) !== null) {
@@ -421,9 +482,15 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
           if (prog) send('transcribe:progress', { file: filePath, progress: parseInt(prog[1]) })
         }
 
-        proc.stdout.on('data', d => processChunk(d.toString()))
-        proc.stderr.on('data', d => processChunk(d.toString()))
-        proc.on('close', () => { currentProc = null; resolve() })
+        proc.stdout.on('data', d => { process.stdout.write('[whisper stdout] ' + d.toString()); processChunk(d.toString()) })
+        proc.stderr.on('data', d => { process.stdout.write('[whisper stderr] ' + d.toString()); processChunk(d.toString()) })
+        proc.on('close', (code) => {
+          currentProc = null
+          whisperExitCode = code
+          console.log(`[whisper close] code=${code} rawOutput.length=${rawOutput.length} lines=${runLines.length}`)
+          console.log(`[whisper cmd] ${whisperCli} ${args.join(' ')}`)
+          resolve()
+        })
       })
 
       if (tempSeg && fs.existsSync(tempSeg)) try { fs.unlinkSync(tempSeg) } catch {}
@@ -454,6 +521,11 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
     }
 
     if (fs.existsSync(wavPath)) try { fs.unlinkSync(wavPath) } catch {}
+
+    if (allLines.length === 0 && whisperExitCode !== 0) {
+      send('transcribe:file', { file: filePath, status: 'error', error: `Whisper crashed (code ${whisperExitCode}) — check the terminal for details` })
+      continue
+    }
 
     const entry = {
       id: Date.now() + Math.random(),

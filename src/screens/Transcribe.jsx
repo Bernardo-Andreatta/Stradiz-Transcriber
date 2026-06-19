@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { FolderOpen, Folder, Loader2, Mic, CheckCircle2, Clock, AlertTriangle, Play, Square, X } from 'lucide-react'
+import { FolderOpen, Folder, Loader2, Mic, CheckCircle2, Clock, AlertTriangle, Play, Square, X, XCircle } from 'lucide-react'
 import './Transcribe.css'
 
 export default function Transcribe({ config, onDone }) {
@@ -14,8 +14,8 @@ export default function Transcribe({ config, onDone }) {
 
   useEffect(() => {
     window.api.transcribe.removeAllListeners()
-    window.api.transcribe.onFile(({ file, status, entry }) => {
-      setFileStates(prev => ({ ...prev, [file]: { ...(prev[file] || {}), status, entry } }))
+    window.api.transcribe.onFile(({ file, status, entry, error }) => {
+      setFileStates(prev => ({ ...prev, [file]: { ...(prev[file] || {}), status, entry, error } }))
     })
     window.api.transcribe.onLine(({ file, line }) => {
       linesRef.current[file] = [...(linesRef.current[file] || []), line]
@@ -88,6 +88,7 @@ export default function Transcribe({ config, onDone }) {
                   {state.status === 'converting' && <><Loader2 size={11} className="spin" /> Converting...</>}
                   {state.status === 'transcribing' && <><Mic size={11} /> Transcribing...</>}
                   {state.status === 'done' && <><CheckCircle2 size={11} /> Done</>}
+                  {state.status === 'error' && <><XCircle size={11} /> {state.error || 'Error'}</>}
                   {!state.status && <><Clock size={11} /> Queued</>}
                 </span>
                 {state.lastSkip && (
