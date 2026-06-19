@@ -114,6 +114,18 @@ function downloadFile(url, dest, onProgress) {
   })
 }
 
+function extractZip(zipPath, destDir) {
+  try {
+    execSync(`tar -xf "${zipPath}" -C "${destDir}"`, { stdio: 'ignore' })
+  } catch {
+    // tar failed (e.g. older Windows that doesn't support zip) — fall back to Expand-Archive
+    execSync(
+      `powershell.exe -NonInteractive -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force"`,
+      { stdio: 'ignore', timeout: 300000 }
+    )
+  }
+}
+
 async function setupWhisper(win) {
   const send = (event, data) => win.webContents.send(event, data)
   ensureDirs()
@@ -139,58 +151,70 @@ async function setupWhisper(win) {
 
   // Download whisper-cli if needed
   if (needsWhisper) {
-    try {
-      // First try our own Vulkan build (GPU-accelerated, works on AMD/NVIDIA/Intel via Vulkan)
-      const vulkanUrl = 'https://github.com/Bernardo-Andreatta/Stradiz-Transcriber/releases/download/v1.0.0/whisper-vulkan-bin-x64.zip'
-      let downloadUrl = null
-      let assetName = null
-      let hasGpu = false
+    // Resolve which build to download once, then retry download+extract up to 3 times
+    let downloadUrl = null
+    let assetName = null
+    let hasGpu = false
 
-      send('setup:status', 'Checking Whisper Vulkan build availability...')
-      try {
-        // HEAD request to verify it exists
-        await new Promise((resolve, reject) => {
-          const req = require('https').request(vulkanUrl, { method: 'HEAD' }, res => {
-            if (res.statusCode === 200 || res.statusCode === 302 || res.statusCode === 301) resolve()
-            else reject(new Error(`HTTP ${res.statusCode}`))
-          })
-          req.on('error', reject)
-          req.end()
+    send('setup:status', 'Checking Whisper Vulkan build availability...')
+    try {
+      const vulkanUrl = 'https://github.com/Bernardo-Andreatta/Stradiz-Transcriber/releases/download/v1.0.0/whisper-vulkan-bin-x64.zip'
+      await new Promise((resolve, reject) => {
+        const req = require('https').request(vulkanUrl, { method: 'HEAD' }, res => {
+          if (res.statusCode === 200 || res.statusCode === 302 || res.statusCode === 301) resolve()
+          else reject(new Error(`HTTP ${res.statusCode}`))
         })
-        downloadUrl = vulkanUrl
-        assetName = 'whisper-vulkan-bin-x64.zip'
-        hasGpu = true
-      } catch {
-        // Fall back to plain CPU build from official release
+        req.on('error', reject)
+        req.end()
+      })
+      downloadUrl = vulkanUrl
+      assetName = 'whisper-vulkan-bin-x64.zip'
+      hasGpu = true
+    } catch {
+      try {
         send('setup:status', 'Fetching latest Whisper release info...')
         const release = await fetchJson('https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest')
         const assets = release.assets || []
         const asset =
           assets.find(a => a.name === 'whisper-bin-x64.zip') ||
           assets.find(a => /x64/i.test(a.name) && a.name.endsWith('.zip') && !/cuda|cublas|blas/i.test(a.name))
-        if (!asset) throw new Error('No suitable Whisper binary found in release')
-        downloadUrl = asset.browser_download_url
-        assetName = asset.name
-        hasGpu = false
-      }
+        if (asset) { downloadUrl = asset.browser_download_url; assetName = asset.name }
+      } catch {}
+    }
 
-      send('setup:status', `Downloading Whisper (${assetName})...`)
+    if (!downloadUrl) {
+      send('setup:status', 'Could not find a Whisper build to download. Please retry setup.')
+    } else {
       const zipPath = path.join(APP_DATA, 'whisper.zip')
-      await downloadFile(downloadUrl, zipPath,
-        (pct, rcv, total) => send('setup:progress', { task: 'whisper', pct, rcv, total })
-      )
-      send('setup:status', 'Extracting Whisper...')
-      fs.mkdirSync(WHISPER_DIR, { recursive: true })
-      execSync(`tar -xf "${zipPath}" -C "${WHISPER_DIR}"`, { stdio: 'ignore' })
-      fs.unlinkSync(zipPath)
-      const extractedCli = findExeInDir(WHISPER_DIR, 'whisper-cli.exe')
-      if (!extractedCli) {
-        send('setup:status', 'Extraction failed — whisper-cli.exe not found after extracting. Please retry setup.')
-      } else {
-        fs.writeFileSync(WHISPER_GPU_FLAG, hasGpu ? '1' : '0')
+      const MAX_ATTEMPTS = 3
+      let whisperOk = false
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS && !whisperOk; attempt++) {
+        try {
+          if (attempt > 1) send('setup:status', `Retrying Whisper download (attempt ${attempt}/${MAX_ATTEMPTS})...`)
+          else send('setup:status', `Downloading Whisper (${assetName})...`)
+
+          if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath)
+          if (fs.existsSync(WHISPER_DIR)) fs.rmSync(WHISPER_DIR, { recursive: true, force: true })
+          fs.mkdirSync(WHISPER_DIR, { recursive: true })
+
+          await downloadFile(downloadUrl, zipPath,
+            (pct, rcv, total) => send('setup:progress', { task: 'whisper', pct, rcv, total })
+          )
+          send('setup:status', 'Extracting Whisper...')
+          extractZip(zipPath, WHISPER_DIR)
+          fs.unlinkSync(zipPath)
+          if (findExeInDir(WHISPER_DIR, 'whisper-cli.exe')) {
+            fs.writeFileSync(WHISPER_GPU_FLAG, hasGpu ? '1' : '0')
+            whisperOk = true
+          } else {
+            throw new Error('whisper-cli.exe not found after extraction')
+          }
+        } catch (e) {
+          if (attempt === MAX_ATTEMPTS) {
+            send('setup:status', `Failed to set up Whisper after ${MAX_ATTEMPTS} attempts: ${e.message}`)
+          }
+        }
       }
-    } catch (e) {
-      send('setup:status', `Failed to download Whisper: ${e.message}`)
     }
   }
 
@@ -215,8 +239,7 @@ async function setupWhisper(win) {
           (pct, rcv, total) => send('setup:progress', { task: 'ffmpeg', pct, rcv, total })
         )
         send('setup:status', 'Extracting ffmpeg...')
-        // Use 'ignore' for stdio — the zip has thousands of files and 'pipe' overflows the default buffer
-        execSync(`tar -xf "${ffmpegZip}" -C "${FFMPEG_DIR}"`, { stdio: 'ignore' })
+        extractZip(ffmpegZip, FFMPEG_DIR)
         // Flatten the inner versioned folder so bin/ffmpeg.exe is directly under FFMPEG_DIR
         const inner = fs.readdirSync(FFMPEG_DIR).find(f => f.startsWith('ffmpeg'))
         if (inner) {
