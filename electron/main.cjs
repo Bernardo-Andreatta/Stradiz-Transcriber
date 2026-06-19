@@ -407,14 +407,16 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
       continue
     }
     send('transcribe:file', { file: filePath, status: 'converting' })
+    send('transcribe:log', `[ffmpeg] Converting: ${path.basename(filePath)}`)
     const convertOk = await new Promise(resolve => {
       const silenceFilter = config.removeSilence
         ? ['-af', 'silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-50dB']
         : []
       const ff = spawn(ffmpegExe, ['-i', filePath, ...silenceFilter,
         '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath, '-y'])
-      ff.on('close', code => resolve(code === 0))
-      ff.on('error', () => resolve(false))
+      ff.stderr.on('data', d => send('transcribe:log', `[ffmpeg] ${d.toString().trim()}`))
+      ff.on('close', code => { send('transcribe:log', `[ffmpeg] exit code ${code}`); resolve(code === 0) })
+      ff.on('error', err => { send('transcribe:log', `[ffmpeg] error: ${err.message}`); resolve(false) })
     })
     if (!convertOk) {
       send('transcribe:file', { file: filePath, status: 'error', error: 'ffmpeg conversion failed' })
@@ -453,6 +455,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         const args = ['-m', model, '-l', 'pt', '-f', segWav,
           '--no-speech-thold', '0.3', '--entropy-thold', '2.8',
           '--no-fallback', '--print-progress', '-nfa', ...gpuArgs]
+        send('transcribe:log', `[whisper] spawn (pass ${skip + 1}): whisper-cli ${args.join(' ')}`)
         const proc = spawn(whisperCli, args)
         currentProc = proc
 
@@ -463,6 +466,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
 
         const processChunk = (text) => {
           rawOutput += text
+          text.split('\n').filter(l => l.trim()).forEach(l => send('transcribe:log', `[whisper] ${l.trim()}`))
           const lineRegex = /\[(\d+:\d+(?::\d+)?\.\d+) --> (\d+:\d+(?::\d+)?\.\d+)\]\s+(.+)/g
           let m
           while ((m = lineRegex.exec(text)) !== null) {
@@ -503,8 +507,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         proc.on('close', (code) => {
           currentProc = null
           whisperExitCode = code
-          console.log(`[whisper close] code=${code} rawOutput.length=${rawOutput.length} lines=${runLines.length}`)
-          console.log(`[whisper cmd] ${whisperCli} ${args.join(' ')}`)
+          send('transcribe:log', `[whisper] exit code ${code} — ${runLines.length} lines captured`)
           resolve()
         })
       })

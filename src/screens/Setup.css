@@ -37,3 +37,18 @@
 
 .start-btn { width: 100%; padding: 12px; font-size: 15px; margin-top: 8px; }
 .done-msg { color: var(--green); font-size: 14px; text-align: center; display: flex; align-items: center; justify-content: center; gap: 6px; }
+
+.setup-log {
+  max-height: 140px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+.setup-log-line { white-space: pre-wrap; word-break: break-all; }
+.setup-log-line:last-child { color: var(--text); }

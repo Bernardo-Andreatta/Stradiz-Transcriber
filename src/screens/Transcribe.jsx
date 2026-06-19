@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { FolderOpen, Folder, Loader2, Mic, CheckCircle2, Clock, AlertTriangle, Play, Square, X, XCircle } from 'lucide-react'
+import { FolderOpen, Folder, Loader2, Mic, CheckCircle2, Clock, AlertTriangle, Play, Square, X, XCircle, Terminal, ChevronDown, ChevronUp } from 'lucide-react'
 import './Transcribe.css'
 
 export default function Transcribe({ config, onDone }) {
@@ -9,8 +9,11 @@ export default function Transcribe({ config, onDone }) {
   const [lines, setLines] = useState({})
   const [removeSilence, setRemoveSilence] = useState(true)
   const [outputDir, setOutputDir] = useState(null)
+  const [debugLogs, setDebugLogs] = useState([])
+  const [showLog, setShowLog] = useState(false)
   const linesRef = useRef({})
   const transcriptRef = useRef(null)
+  const logRef = useRef(null)
 
   useEffect(() => {
     window.api.transcribe.removeAllListeners()
@@ -35,6 +38,10 @@ export default function Transcribe({ config, onDone }) {
         }))
       }
     })
+    window.api.transcribe.onLog((msg) => {
+      setDebugLogs(prev => [...prev, msg])
+      setTimeout(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, 30)
+    })
     return () => window.api.transcribe.removeAllListeners()
   }, [])
 
@@ -51,6 +58,7 @@ export default function Transcribe({ config, onDone }) {
   const start = async () => {
     if (!files.length) return
     setRunning(true)
+    setDebugLogs([])
     linesRef.current = {}
     setLines({})
     setFileStates({})
@@ -141,8 +149,11 @@ export default function Transcribe({ config, onDone }) {
         <div className="transcript-header">
           {activeFile && <span className="transcript-title">{activeFile.split(/[\\/]/).pop()}</span>}
           {!activeFile && <span className="transcript-title" style={{ color: 'var(--text-dim)' }}>Transcript will appear here</span>}
+          <button className="log-toggle" onClick={() => setShowLog(v => !v)} title="Toggle debug log">
+            <Terminal size={13} /> {showLog ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+          </button>
         </div>
-        <div className="transcript" ref={transcriptRef}>
+        <div className="transcript" ref={transcriptRef} style={showLog ? { flex: '1 1 0', minHeight: 0 } : {}}>
           {activeLines.map((line, i) => (
             <div key={i} className="transcript-line">
               <span className="line-time">{line.time}</span>
@@ -153,6 +164,12 @@ export default function Transcribe({ config, onDone }) {
             <div className="transcript-waiting">Waiting for output...</div>
           )}
         </div>
+        {showLog && (
+          <div className="debug-log" ref={logRef}>
+            {debugLogs.length === 0 && <span className="debug-log-empty">No log yet — start a transcription.</span>}
+            {debugLogs.map((l, i) => <div key={i} className="debug-log-line">{l}</div>)}
+          </div>
+        )}
       </div>
     </div>
   )

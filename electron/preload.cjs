@@ -23,11 +23,13 @@ contextBridge.exposeInMainWorld('api', {
     onLine: (cb) => ipcRenderer.on('transcribe:line', (_, d) => cb(d)),
     onProgress: (cb) => ipcRenderer.on('transcribe:progress', (_, d) => cb(d)),
     onHallucination: (cb) => ipcRenderer.on('transcribe:hallucination', (_, d) => cb(d)),
+    onLog: (cb) => ipcRenderer.on('transcribe:log', (_, d) => cb(d)),
     removeAllListeners: () => {
       ipcRenderer.removeAllListeners('transcribe:file')
       ipcRenderer.removeAllListeners('transcribe:line')
       ipcRenderer.removeAllListeners('transcribe:progress')
       ipcRenderer.removeAllListeners('transcribe:hallucination')
+      ipcRenderer.removeAllListeners('transcribe:log')
     },
   },
   catalog: {

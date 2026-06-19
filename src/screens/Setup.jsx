@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Mic, Cpu, CheckCircle2, Zap } from 'lucide-react'
 import './Setup.css'
 
@@ -11,26 +11,34 @@ function fmt(bytes) {
 
 export default function Setup({ onReady }) {
   const [status, setStatus] = useState('Checking system...')
+  const [logs, setLogs] = useState([])
   const [gpu, setGpu] = useState(null)
   const [progress, setProgress] = useState({})
   const [downloading, setDownloading] = useState(false)
   const [done, setDone] = useState(false)
+  const logRef = useRef(null)
+
+  const addLog = (msg) => {
+    setLogs(prev => [...prev, msg])
+    setTimeout(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, 30)
+  }
 
   useEffect(() => {
-    window.api.setup.onStatus(setStatus)
+    window.api.setup.onStatus(msg => { setStatus(msg); addLog(msg) })
     window.api.setup.onGpu(setGpu)
     window.api.setup.onProgress((d) => setProgress(prev => ({ ...prev, [d.task]: d })))
     window.api.setup.onDone((cfg) => {
       setDownloading(false)
       if (cfg.ready === false) {
         setDone(false)
+        addLog('Setup failed — check the log above and retry.')
       } else {
         setDone(true)
         setStatus('Ready!')
+        addLog('Setup complete!')
         onReady(cfg)
       }
     })
-    // Check current status immediately
     window.api.setup.check().then(res => {
       if (res.ready) {
         setGpu(res.gpu)
@@ -42,6 +50,7 @@ export default function Setup({ onReady }) {
 
   const start = async () => {
     setDownloading(true)
+    setLogs([])
     setStatus('Starting setup...')
     await window.api.setup.start()
   }
@@ -60,7 +69,7 @@ export default function Setup({ onReady }) {
         {gpu && (
           <div className="gpu-row">
             {gpu === 'amd' && <span className="badge amd"><Zap size={12} /> AMD GPU (Vulkan)</span>}
-            {gpu === 'nvidia' && <span className="badge nvidia"><Zap size={12} /> NVIDIA GPU (CUDA)</span>}
+            {gpu === 'nvidia' && <span className="badge nvidia"><Zap size={12} /> NVIDIA GPU (Vulkan)</span>}
             {gpu === 'cpu' && <span className="badge cpu"><Cpu size={12} /> CPU only</span>}
           </div>
         )}
@@ -68,7 +77,7 @@ export default function Setup({ onReady }) {
         {Object.entries(progress).map(([task, d]) => (
           <div key={task} className="dl-row">
             <div className="dl-label">
-              <span>{task === 'model' ? 'Whisper large-v3 model' : task === 'vad' ? 'VAD silence detection model' : 'ffmpeg'}</span>
+              <span>{task === 'model' ? 'Whisper large-v3 model' : task === 'vad' ? 'VAD silence detection model' : task === 'whisper' ? 'Whisper engine' : 'ffmpeg'}</span>
               <span className="dl-size">{fmt(d.rcv)} / {fmt(d.total)}</span>
             </div>
             <div className="progress-bar">
@@ -77,6 +86,12 @@ export default function Setup({ onReady }) {
             <span className="dl-pct">{d.pct}%</span>
           </div>
         ))}
+
+        {logs.length > 0 && (
+          <div className="setup-log" ref={logRef}>
+            {logs.map((l, i) => <div key={i} className="setup-log-line">{l}</div>)}
+          </div>
+        )}
 
         {!done && (
           <button className="btn-primary start-btn" onClick={start} disabled={downloading}>
