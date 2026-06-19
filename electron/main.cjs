@@ -181,7 +181,7 @@ async function setupWhisper(win) {
       )
       send('setup:status', 'Extracting Whisper...')
       fs.mkdirSync(WHISPER_DIR, { recursive: true })
-      execSync(`tar -xf "${zipPath}" -C "${WHISPER_DIR}"`, { stdio: 'pipe' })
+      execSync(`tar -xf "${zipPath}" -C "${WHISPER_DIR}"`, { stdio: 'ignore' })
       fs.unlinkSync(zipPath)
       const extractedCli = findExeInDir(WHISPER_DIR, 'whisper-cli.exe')
       if (!extractedCli) {
@@ -196,29 +196,45 @@ async function setupWhisper(win) {
 
   // Download ffmpeg if needed
   if (needsFfmpeg) {
-    try {
-      send('setup:status', 'Downloading ffmpeg...')
-      const ffmpegZip = path.join(APP_DATA, 'ffmpeg.zip')
-      await downloadFile(
-        'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
-        ffmpegZip,
-        (pct, rcv, total) => send('setup:progress', { task: 'ffmpeg', pct, rcv, total })
-      )
-      send('setup:status', 'Extracting ffmpeg...')
-      fs.mkdirSync(FFMPEG_DIR, { recursive: true })
-      execSync(`tar -xf "${ffmpegZip}" -C "${FFMPEG_DIR}"`, { stdio: 'pipe' })
-      // Flatten the inner versioned folder so bin/ffmpeg.exe is directly under FFMPEG_DIR
-      const inner = fs.readdirSync(FFMPEG_DIR).find(f => f.startsWith('ffmpeg'))
-      if (inner) {
-        const innerPath = path.join(FFMPEG_DIR, inner)
-        fs.cpSync(innerPath, FFMPEG_DIR, { recursive: true })
-        fs.rmSync(innerPath, { recursive: true, force: true })
+    const ffmpegZip = path.join(APP_DATA, 'ffmpeg.zip')
+    const MAX_ATTEMPTS = 3
+    let ffmpegOk = false
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !ffmpegOk; attempt++) {
+      try {
+        if (attempt > 1) send('setup:status', `Retrying ffmpeg download (attempt ${attempt}/${MAX_ATTEMPTS})...`)
+        else send('setup:status', 'Downloading ffmpeg...')
+
+        // Clean up any partial state from a previous failed attempt
+        if (fs.existsSync(ffmpegZip)) fs.unlinkSync(ffmpegZip)
+        if (fs.existsSync(FFMPEG_DIR)) fs.rmSync(FFMPEG_DIR, { recursive: true, force: true })
+        fs.mkdirSync(FFMPEG_DIR, { recursive: true })
+
+        await downloadFile(
+          'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+          ffmpegZip,
+          (pct, rcv, total) => send('setup:progress', { task: 'ffmpeg', pct, rcv, total })
+        )
+        send('setup:status', 'Extracting ffmpeg...')
+        // Use 'ignore' for stdio — the zip has thousands of files and 'pipe' overflows the default buffer
+        execSync(`tar -xf "${ffmpegZip}" -C "${FFMPEG_DIR}"`, { stdio: 'ignore' })
+        // Flatten the inner versioned folder so bin/ffmpeg.exe is directly under FFMPEG_DIR
+        const inner = fs.readdirSync(FFMPEG_DIR).find(f => f.startsWith('ffmpeg'))
+        if (inner) {
+          const innerPath = path.join(FFMPEG_DIR, inner)
+          fs.cpSync(innerPath, FFMPEG_DIR, { recursive: true })
+          fs.rmSync(innerPath, { recursive: true, force: true })
+        }
+        fs.unlinkSync(ffmpegZip)
+        if (getFFmpeg()) {
+          ffmpegOk = true
+        } else {
+          throw new Error('ffmpeg.exe not found after extraction')
+        }
+      } catch (e) {
+        if (attempt === MAX_ATTEMPTS) {
+          send('setup:status', `Failed to set up ffmpeg after ${MAX_ATTEMPTS} attempts: ${e.message}`)
+        }
       }
-      fs.unlinkSync(ffmpegZip)
-      const ffmpegExe = getFFmpeg()
-      if (!ffmpegExe) send('setup:status', 'Extraction failed — ffmpeg.exe not found after extracting. Please retry setup.')
-    } catch (e) {
-      send('setup:status', `Failed to set up ffmpeg: ${e.message}`)
     }
   }
 
