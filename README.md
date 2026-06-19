@@ -20,7 +20,7 @@ A local, privacy-first audio transcription desktop app built on [whisper.cpp](ht
 
 ## Installation
 
-Download the latest installer from the [Releases](../../releases) page and run it. No dependencies to install manually — the app handles everything on first launch (~1.8 GB download: whisper.cpp binary + FFmpeg + large-v3-turbo model).
+Download the latest installer from the [Releases](../../releases) page and run it. No dependencies to install manually — the app handles everything on first launch (~1.6 GB download: Vulkan-accelerated whisper.cpp binary + FFmpeg + large-v3-turbo model).
 
 > Files are stored in `%USERPROFILE%\.whisper-app` and are preserved across uninstalls.
 
@@ -49,7 +49,7 @@ On first run in dev mode the Setup screen will download whisper.cpp, FFmpeg, and
 **Build the installer:**
 
 ```bash
-npm run dist:win     # outputs release/Stradiz Transcriber Setup 1.0.0.exe
+npm run dist:win     # outputs release/Stradiz Transcriber Setup.exe
 ```
 
 ## Tech stack
