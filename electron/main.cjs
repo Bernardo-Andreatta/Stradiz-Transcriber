@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu } = require('electron')
 
 // Must be called before app.whenReady()
 protocol.registerSchemesAsPrivileged([
@@ -234,6 +234,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null)
   protocol.handle('localfile', (request) => {
     const filePath = decodeURIComponent(request.url.slice('localfile://'.length))
     return net.fetch(`file:///${filePath}`)
@@ -352,9 +353,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
     let offsetMs = 0
     const INITIAL_SKIP_MS = 20000
     let skipMs = INITIAL_SKIP_MS
-    const MAX_SKIPS = 15
-
-    for (let skip = 0; skip <= MAX_SKIPS && !stopRequested; skip++) {
+    for (let skip = 0; !stopRequested; skip++) {
       // For recovery passes: extract a segment from the silence-removed wav starting at offsetMs
       let segWav = wavPath
       let tempSeg = null

@@ -45,6 +45,7 @@
     "directories": {
       "output": "release"
     },
+    "artifactName": "${productName} Setup.${ext}",
     "win": {
       "target": [
         {
@@ -62,7 +63,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Stradiz Transcriber",
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh"
     }
   }
 }

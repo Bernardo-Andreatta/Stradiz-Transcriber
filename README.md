@@ -11,7 +11,7 @@ A local, privacy-first audio transcription desktop app built on [whisper.cpp](ht
 - **Local transcription** — powered by whisper.cpp with the `ggml-large-v3-turbo` model
 - **GPU acceleration** — auto-detects NVIDIA / AMD via Vulkan; falls back to CPU
 - **Silence removal** — optional FFmpeg preprocessing to skip dead air before transcription
-- **Hallucination recovery** — detects and auto-skips repeated-line hallucinations, resumes from the next segment (up to 15 retries per file)
+- **Hallucination recovery** — detects and auto-skips repeated-line hallucinations, resumes from the next segment until the file ends or you cancel
 - **Subtitle catalog** — browse, play, and edit all transcribed files in one place
 - **Editable subtitles** — double-click any line to edit; insert new lines between existing ones
 - **SRT + TXT export** — saves both formats side-by-side whenever you edit
