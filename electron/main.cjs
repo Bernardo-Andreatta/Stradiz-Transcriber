@@ -89,41 +89,128 @@ function fetchJson(url) {
   })
 }
 
+// Robust downloader: follows redirects, checks HTTP status, enforces an idle
+// timeout, waits for the file to be fully flushed to disk, and verifies the
+// downloaded size matches Content-Length. Cleans up the partial file on failure.
 function downloadFile(url, dest, onProgress) {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest)
-    const protocol = url.startsWith('https') ? https : http
+    const MAX_REDIRECTS = 10
+    const IDLE_TIMEOUT_MS = 60000
+    let redirects = 0
+    let settled = false
+
+    const finish = (err) => {
+      if (settled) return
+      settled = true
+      if (err) { try { fs.unlinkSync(dest) } catch {} ; reject(err) }
+      else resolve()
+    }
 
     const request = (u) => {
-      protocol.get(u, res => {
-        if (res.statusCode === 301 || res.statusCode === 302) {
-          return request(res.headers.location)
+      let proto
+      try { proto = (new URL(u).protocol === 'http:') ? http : https }
+      catch (e) { return finish(new Error(`Invalid URL: ${u}`)) }
+
+      const req = proto.get(u, { headers: { 'User-Agent': 'whisper-app/1.0' } }, res => {
+        // Follow redirects (all the common kinds)
+        if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+          res.resume() // drain so the socket can be reused
+          if (++redirects > MAX_REDIRECTS) return finish(new Error('Too many redirects'))
+          const loc = res.headers.location
+          if (!loc) return finish(new Error(`Redirect ${res.statusCode} with no Location header`))
+          return request(new URL(loc, u).toString())
         }
+        if (res.statusCode !== 200) {
+          res.resume()
+          return finish(new Error(`HTTP ${res.statusCode} while downloading`))
+        }
+
         const total = parseInt(res.headers['content-length'] || '0')
         let received = 0
+        const file = fs.createWriteStream(dest)
+        file.on('error', finish)
+
         res.on('data', chunk => {
           received += chunk.length
-          file.write(chunk)
           if (total > 0) onProgress(Math.round((received / total) * 100), received, total)
         })
-        res.on('end', () => { file.end(); resolve() })
-        res.on('error', reject)
-      }).on('error', reject)
+        res.on('error', finish)
+        res.pipe(file)
+
+        // 'finish' fires only after every byte is flushed to disk
+        file.on('finish', () => {
+          file.close(() => {
+            if (total > 0 && received !== total) {
+              return finish(new Error(`Incomplete download: got ${received} of ${total} bytes`))
+            }
+            finish(null)
+          })
+        })
+      })
+
+      req.on('error', finish)
+      // Abort if the connection stalls (no data for IDLE_TIMEOUT_MS)
+      req.setTimeout(IDLE_TIMEOUT_MS, () => {
+        req.destroy(new Error(`Download stalled (no data for ${IDLE_TIMEOUT_MS / 1000}s)`))
+      })
     }
+
     request(url)
   })
 }
 
+// Extract a .zip on Windows. Tries bsdtar (fast, built into Win10+), then falls
+// back to PowerShell Expand-Archive. Throws a descriptive error if both fail.
 function extractZip(zipPath, destDir) {
+  // Sanity check: a real zip starts with "PK". Catches truncated/HTML downloads
+  // with a clear message instead of a cryptic extractor error.
   try {
-    execSync(`tar -xf "${zipPath}" -C "${destDir}"`, { stdio: 'ignore' })
-  } catch {
-    // tar failed (e.g. older Windows that doesn't support zip) — fall back to Expand-Archive
-    execSync(
-      `powershell.exe -NonInteractive -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force"`,
-      { stdio: 'ignore', timeout: 300000 }
-    )
+    const fd = fs.openSync(zipPath, 'r')
+    const sig = Buffer.alloc(2)
+    fs.readSync(fd, sig, 0, 2, 0)
+    fs.closeSync(fd)
+    if (sig[0] !== 0x50 || sig[1] !== 0x4b) {
+      throw new Error('downloaded file is not a valid zip (corrupt or incomplete)')
+    }
+  } catch (e) {
+    if (/not a valid zip/.test(e.message)) throw e
+    // openSync/readSync failure — fall through and let the extractor try
   }
+
+  const escPs = (p) => p.replace(/'/g, "''")
+  try {
+    execSync(`tar -xf "${zipPath}" -C "${destDir}"`, { stdio: ['ignore', 'ignore', 'pipe'] })
+    return
+  } catch (tarErr) {
+    try {
+      execSync(
+        `powershell.exe -NoProfile -NonInteractive -Command "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath '${escPs(zipPath)}' -DestinationPath '${escPs(destDir)}' -Force"`,
+        { stdio: ['ignore', 'ignore', 'pipe'], timeout: 600000 }
+      )
+      return
+    } catch (psErr) {
+      const tarMsg = (tarErr.stderr || tarErr.message || '').toString().split('\n')[0].trim()
+      const psMsg = (psErr.stderr || psErr.message || '').toString().split('\n')[0].trim()
+      throw new Error(`extraction failed — tar: ${tarMsg || 'failed'}; Expand-Archive: ${psMsg || 'failed'}`)
+    }
+  }
+}
+
+// Run an async step with up to `max` attempts, reporting progress via send().
+async function withRetry(label, send, fn, max = 3) {
+  let lastErr
+  for (let attempt = 1; attempt <= max; attempt++) {
+    try {
+      if (attempt > 1) send('setup:status', `Retrying ${label} (attempt ${attempt}/${max})...`)
+      await fn(attempt)
+      return true
+    } catch (e) {
+      lastErr = e
+      send('setup:status', `${label} attempt ${attempt}/${max} failed: ${e.message}`)
+    }
+  }
+  send('setup:status', `Failed to set up ${label} after ${max} attempts: ${lastErr ? lastErr.message : 'unknown error'}`)
+  return false
 }
 
 async function setupWhisper(win) {
@@ -151,7 +238,8 @@ async function setupWhisper(win) {
 
   // Download whisper-cli if needed
   if (needsWhisper) {
-    // Resolve which build to download once, then retry download+extract up to 3 times
+    // Resolve which build to download once (URL resolution isn't retried, the
+    // download/extract is). Prefer our Vulkan build; fall back to plain CPU build.
     let downloadUrl = null
     let assetName = null
     let hasGpu = false
@@ -160,11 +248,13 @@ async function setupWhisper(win) {
     try {
       const vulkanUrl = 'https://github.com/Bernardo-Andreatta/Stradiz-Transcriber/releases/download/v1.0.0/whisper-vulkan-bin-x64.zip'
       await new Promise((resolve, reject) => {
-        const req = require('https').request(vulkanUrl, { method: 'HEAD' }, res => {
-          if (res.statusCode === 200 || res.statusCode === 302 || res.statusCode === 301) resolve()
+        const req = https.request(vulkanUrl, { method: 'HEAD', headers: { 'User-Agent': 'whisper-app/1.0' } }, res => {
+          res.resume()
+          if ([200, 301, 302, 307, 308].includes(res.statusCode)) resolve()
           else reject(new Error(`HTTP ${res.statusCode}`))
         })
         req.on('error', reject)
+        req.setTimeout(15000, () => req.destroy(new Error('HEAD request timed out')))
         req.end()
       })
       downloadUrl = vulkanUrl
@@ -183,104 +273,85 @@ async function setupWhisper(win) {
     }
 
     if (!downloadUrl) {
-      send('setup:status', 'Could not find a Whisper build to download. Please retry setup.')
+      send('setup:status', 'Could not reach the download server for Whisper. Check your connection and retry setup.')
     } else {
       const zipPath = path.join(APP_DATA, 'whisper.zip')
-      const MAX_ATTEMPTS = 3
-      let whisperOk = false
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS && !whisperOk; attempt++) {
-        try {
-          if (attempt > 1) send('setup:status', `Retrying Whisper download (attempt ${attempt}/${MAX_ATTEMPTS})...`)
-          else send('setup:status', `Downloading Whisper (${assetName})...`)
+      await withRetry('Whisper', send, async (attempt) => {
+        if (attempt === 1) send('setup:status', `Downloading Whisper (${assetName})...`)
+        // Start each attempt from a clean slate
+        try { if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath) } catch {}
+        if (fs.existsSync(WHISPER_DIR)) fs.rmSync(WHISPER_DIR, { recursive: true, force: true })
+        fs.mkdirSync(WHISPER_DIR, { recursive: true })
 
-          if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath)
-          if (fs.existsSync(WHISPER_DIR)) fs.rmSync(WHISPER_DIR, { recursive: true, force: true })
-          fs.mkdirSync(WHISPER_DIR, { recursive: true })
-
-          await downloadFile(downloadUrl, zipPath,
-            (pct, rcv, total) => send('setup:progress', { task: 'whisper', pct, rcv, total })
-          )
-          send('setup:status', 'Extracting Whisper...')
-          extractZip(zipPath, WHISPER_DIR)
-          fs.unlinkSync(zipPath)
-          if (findExeInDir(WHISPER_DIR, 'whisper-cli.exe')) {
-            fs.writeFileSync(WHISPER_GPU_FLAG, hasGpu ? '1' : '0')
-            whisperOk = true
-          } else {
-            throw new Error('whisper-cli.exe not found after extraction')
-          }
-        } catch (e) {
-          if (attempt === MAX_ATTEMPTS) {
-            send('setup:status', `Failed to set up Whisper after ${MAX_ATTEMPTS} attempts: ${e.message}`)
-          }
+        await downloadFile(downloadUrl, zipPath,
+          (pct, rcv, total) => send('setup:progress', { task: 'whisper', pct, rcv, total })
+        )
+        send('setup:status', 'Extracting Whisper...')
+        extractZip(zipPath, WHISPER_DIR)
+        try { fs.unlinkSync(zipPath) } catch {}
+        if (!findExeInDir(WHISPER_DIR, 'whisper-cli.exe')) {
+          throw new Error('whisper-cli.exe not found after extraction')
         }
-      }
+        fs.writeFileSync(WHISPER_GPU_FLAG, hasGpu ? '1' : '0')
+      })
     }
   }
 
   // Download ffmpeg if needed
   if (needsFfmpeg) {
     const ffmpegZip = path.join(APP_DATA, 'ffmpeg.zip')
-    const MAX_ATTEMPTS = 3
-    let ffmpegOk = false
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !ffmpegOk; attempt++) {
-      try {
-        if (attempt > 1) send('setup:status', `Retrying ffmpeg download (attempt ${attempt}/${MAX_ATTEMPTS})...`)
-        else send('setup:status', 'Downloading ffmpeg...')
+    await withRetry('ffmpeg', send, async (attempt) => {
+      if (attempt === 1) send('setup:status', 'Downloading ffmpeg...')
+      // Start each attempt from a clean slate
+      try { if (fs.existsSync(ffmpegZip)) fs.unlinkSync(ffmpegZip) } catch {}
+      if (fs.existsSync(FFMPEG_DIR)) fs.rmSync(FFMPEG_DIR, { recursive: true, force: true })
+      fs.mkdirSync(FFMPEG_DIR, { recursive: true })
 
-        // Clean up any partial state from a previous failed attempt
-        if (fs.existsSync(ffmpegZip)) fs.unlinkSync(ffmpegZip)
-        if (fs.existsSync(FFMPEG_DIR)) fs.rmSync(FFMPEG_DIR, { recursive: true, force: true })
-        fs.mkdirSync(FFMPEG_DIR, { recursive: true })
-
-        await downloadFile(
-          'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
-          ffmpegZip,
-          (pct, rcv, total) => send('setup:progress', { task: 'ffmpeg', pct, rcv, total })
-        )
-        send('setup:status', 'Extracting ffmpeg...')
-        extractZip(ffmpegZip, FFMPEG_DIR)
-        // Flatten the inner versioned folder so bin/ffmpeg.exe is directly under FFMPEG_DIR
-        const inner = fs.readdirSync(FFMPEG_DIR).find(f => f.startsWith('ffmpeg'))
-        if (inner) {
-          const innerPath = path.join(FFMPEG_DIR, inner)
-          fs.cpSync(innerPath, FFMPEG_DIR, { recursive: true })
-          fs.rmSync(innerPath, { recursive: true, force: true })
-        }
-        fs.unlinkSync(ffmpegZip)
-        if (getFFmpeg()) {
-          ffmpegOk = true
-        } else {
-          throw new Error('ffmpeg.exe not found after extraction')
-        }
-      } catch (e) {
-        if (attempt === MAX_ATTEMPTS) {
-          send('setup:status', `Failed to set up ffmpeg after ${MAX_ATTEMPTS} attempts: ${e.message}`)
-        }
+      await downloadFile(
+        'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+        ffmpegZip,
+        (pct, rcv, total) => send('setup:progress', { task: 'ffmpeg', pct, rcv, total })
+      )
+      send('setup:status', 'Extracting ffmpeg...')
+      extractZip(ffmpegZip, FFMPEG_DIR)
+      // Flatten the inner versioned folder so bin/ffmpeg.exe is directly under FFMPEG_DIR
+      const inner = fs.readdirSync(FFMPEG_DIR).find(f => f.startsWith('ffmpeg'))
+      if (inner) {
+        const innerPath = path.join(FFMPEG_DIR, inner)
+        fs.cpSync(innerPath, FFMPEG_DIR, { recursive: true })
+        fs.rmSync(innerPath, { recursive: true, force: true })
       }
-    }
+      try { fs.unlinkSync(ffmpegZip) } catch {}
+      if (!getFFmpeg()) throw new Error('ffmpeg.exe not found after extraction')
+    })
   }
 
-  // Download model if needed
+  // Download model if needed (downloadFile verifies the full size via Content-Length)
   if (needsModel) {
-    send('setup:status', 'Downloading Whisper large-v3-turbo model (1.5 GB)...')
     const modelPath = path.join(MODELS_DIR, 'ggml-large-v3-turbo.bin')
-    await downloadFile(
-      'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin',
-      modelPath,
-      (pct, rcv, total) => send('setup:progress', { task: 'model', pct, rcv, total })
-    )
+    await withRetry('model', send, async (attempt) => {
+      if (attempt === 1) send('setup:status', 'Downloading Whisper large-v3-turbo model (1.5 GB)...')
+      try { if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath) } catch {}
+      await downloadFile(
+        'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin',
+        modelPath,
+        (pct, rcv, total) => send('setup:progress', { task: 'model', pct, rcv, total })
+      )
+    })
   }
 
   // Download VAD model if needed
   if (needsVad) {
-    send('setup:status', 'Downloading VAD model (silence detection)...')
     const vadPath = path.join(MODELS_DIR, 'ggml-silero-v5.1.2.bin')
-    await downloadFile(
-      'https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin',
-      vadPath,
-      (pct, rcv, total) => send('setup:progress', { task: 'vad', pct, rcv, total })
-    )
+    await withRetry('VAD model', send, async (attempt) => {
+      if (attempt === 1) send('setup:status', 'Downloading VAD model (silence detection)...')
+      try { if (fs.existsSync(vadPath)) fs.unlinkSync(vadPath) } catch {}
+      await downloadFile(
+        'https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin',
+        vadPath,
+        (pct, rcv, total) => send('setup:progress', { task: 'vad', pct, rcv, total })
+      )
+    })
   }
 
   const finalCli = getWhisperCli()
