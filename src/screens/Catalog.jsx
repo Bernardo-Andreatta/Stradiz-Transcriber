@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
-import { FolderOpen, Trash2, Save, Pencil, Play, Pause, Plus, X } from 'lucide-react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { FolderOpen, Trash2, Save, Pencil, Play, Pause, Plus } from 'lucide-react'
 import './Catalog.css'
 
 function timeToSeconds(t) {
@@ -22,7 +22,7 @@ function parseUserTime(input) {
   const t = input.trim().replace(',', '.')
   const [timePart, fracStr = '0'] = t.split('.')
   const parts = timePart.split(':').map(s => parseInt(s) || 0)
-  let h = 0, m = 0, s = 0
+  let h = 0, m = 0, s
   if (parts.length >= 3) [h, m, s] = parts
   else if (parts.length === 2) [m, s] = parts
   else [s] = parts
@@ -69,7 +69,6 @@ export default function Catalog() {
   const [selected, setSelected] = useState(null)
   const [subtitles, setSubtitles] = useState([])
   const [currentTime, setCurrentTime] = useState(0)
-  const [activeIdx, setActiveIdx] = useState(-1)
   const [editingIdx, setEditingIdx] = useState(-1)
   const [editText, setEditText] = useState('')
   const [insertingAfterIdx, setInsertingAfterIdx] = useState(null)
@@ -93,30 +92,32 @@ export default function Catalog() {
     window.api.catalog.load().then(setItems)
   }, [])
 
-  useEffect(() => {
-    if (!selected) return
-    setEditingIdx(-1)
-    setInsertingAfterIdx(null)
-    setDirty(false)
-    window.api.file.readSrt(selected.srtPath).then(subs => {
-      setSubtitles(subs)
-      setActiveIdx(-1)
-    })
-  }, [selected])
+  // The currently-playing subtitle is derived from playback position, not stored
+  // in state — keeps it in sync without a setState-in-effect cascade.
+  const activeIdx = useMemo(
+    () => subtitles.findLastIndex(s => timeToSeconds(s.time) <= currentTime),
+    [subtitles, currentTime]
+  )
 
   useEffect(() => {
-    if (!subtitles.length) return
-    const idx = subtitles.findLastIndex(s => timeToSeconds(s.time) <= currentTime)
-    if (idx !== activeIdx) {
-      setActiveIdx(idx)
-      if (editingIdx === -1 && insertingAfterIdx === null) {
-        setTimeout(() => {
-          const el = subtitleRef.current?.querySelector(`[data-idx="${idx}"]`)
-          if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-        }, 50)
-      }
-    }
-  }, [currentTime, subtitles])
+    if (!selected) return
+    let cancelled = false
+    window.api.file.readSrt(selected.srtPath).then(subs => {
+      if (cancelled) return
+      setSubtitles(subs)
+      setEditingIdx(-1)
+      setInsertingAfterIdx(null)
+      setDirty(false)
+    })
+    return () => { cancelled = true }
+  }, [selected])
+
+  // Keep the active subtitle scrolled into view, but not while editing/inserting.
+  useEffect(() => {
+    if (activeIdx < 0 || editingIdx !== -1 || insertingAfterIdx !== null) return
+    const el = subtitleRef.current?.querySelector(`[data-idx="${activeIdx}"]`)
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [activeIdx])
 
   const deleteItem = async (e, id) => {
     e.stopPropagation()
