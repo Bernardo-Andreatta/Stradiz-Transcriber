@@ -6,6 +6,7 @@ A local, privacy-first audio transcription desktop app built on [whisper.cpp](ht
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
 ![Windows](https://img.shields.io/badge/Windows-x64-0078D4?logo=windows)
 ![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2B%20Intel-000000?logo=apple)
+![Linux](https://img.shields.io/badge/Linux-AppImage%20x64-FCC624?logo=linux&logoColor=black)
 
 ## Features
 
@@ -30,6 +31,7 @@ Download the latest build for your OS from the [Releases](../../releases) page. 
 | Windows 10/11 (64-bit) | `Stradiz.Transcriber.Setup.exe` |
 | Mac with Apple Silicon (M1/M2/M3/M4) | `Stradiz.Transcriber-arm64.dmg` |
 | Mac with Intel processor | `Stradiz.Transcriber-x64.dmg` |
+| Linux (x64) | `Stradiz.Transcriber-x86_64.AppImage` |
 
 **Not sure which Mac you have?** Click the  Apple menu → **About This Mac**. If it says **Apple M1/M2/M3/M4** (or "Apple silicon"), use `arm64`. If it lists an **Intel** chip, use `x64`. (Picking the wrong one still runs, just slower under translation — but match it for best speed.)
 
@@ -52,6 +54,17 @@ Open the `.dmg` and drag **Stradiz Transcriber** into the **Applications** folde
 > Files are stored in `~/.whisper-app`.
 
 > **Uninstalling on macOS:** Dragging the app to the Trash leaves the ~1.6 GB of downloaded engine/model data behind (macOS apps have no uninstaller). To remove it: in the app, go to **Setup → Remove downloaded data**, or delete the folder manually with `rm -rf ~/.whisper-app`, then trash the app.
+
+### Linux (x64)
+
+Download the `.AppImage`, make it executable, and run it:
+
+```bash
+chmod +x "Stradiz Transcriber-x86_64.AppImage"
+./"Stradiz Transcriber-x86_64.AppImage"
+```
+
+First launch pulls a CPU whisper.cpp build + FFmpeg + model. Transcription runs on the CPU (no GPU acceleration on Linux yet). Files are stored in `~/.whisper-app`; **Setup → Remove downloaded data** clears them.
 
 ## Usage
 

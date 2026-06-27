@@ -5,12 +5,15 @@
 | **Windows 10/11** (64-bit) | `Stradiz.Transcriber.Setup.exe` |
 | **Mac — Apple Silicon** (M1/M2/M3/M4) | `Stradiz.Transcriber-arm64.dmg` |
 | **Mac — Intel** | `Stradiz.Transcriber-x64.dmg` |
+| **Linux** (x64) | `Stradiz.Transcriber-x86_64.AppImage` |
 
 **Not sure which Mac?**  Apple menu → **About This Mac**. "Apple M…" → `arm64`. "Intel" → `x64`.
 
+**Linux:** make it executable and run it — `chmod +x Stradiz.Transcriber-*.AppImage && ./Stradiz.Transcriber-*.AppImage`.
+
 ## First launch
 
-No manual setup. On first run the app downloads the right engine + FFmpeg + the large-v3-turbo model (~1.6 GB), then runs fully offline. A GPU is used automatically — Metal on Mac, Vulkan (NVIDIA/AMD) on Windows.
+No manual setup. On first run the app downloads the right engine + FFmpeg + the large-v3-turbo model (~1.6 GB), then runs fully offline. A GPU is used automatically — Metal on Mac, Vulkan (NVIDIA/AMD) on Windows. Linux runs on CPU.
 
 ## Opening it the first time
 
