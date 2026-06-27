@@ -71,3 +71,20 @@ jobs:
             release/*.dmg
             release/*.exe
           fail_on_unmatched_files: false
+
+  # Set the release body once both installers are uploaded: an auto-generated
+  # changelog from the merged PRs/commits, plus the static install footer.
+  # A single job (not the build matrix) so the footer isn't appended twice.
+  release-notes:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          append_body: true
+          body_path: .github/release-notes-footer.md
