@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { FolderOpen, Folder, Loader2, Mic, CheckCircle2, Clock, AlertTriangle, Play, Square, X, XCircle, Terminal, ChevronDown, ChevronUp } from 'lucide-react'
+import { FolderOpen, Folder, Loader2, CheckCircle2, Clock, AlertTriangle, Play, Square, X, XCircle, Terminal, ChevronDown, ChevronUp } from 'lucide-react'
+import LogConsole from '../components/LogConsole.jsx'
+import Waveform from '../components/Waveform.jsx'
 import './Transcribe.css'
 
-export default function Transcribe({ config, onDone }) {
+const ACCEPTED_EXT = ['mp3', 'mp4', 'm4a', 'wav', 'ogg', 'flac', 'mkv', 'mov', 'avi', 'webm', 'aac']
+
+export default function Transcribe({ config, onDone, hidden }) {
   const [files, setFiles] = useState([])
   const [running, setRunning] = useState(false)
   const [fileStates, setFileStates] = useState({})
@@ -11,9 +15,9 @@ export default function Transcribe({ config, onDone }) {
   const [outputDir, setOutputDir] = useState(null)
   const [debugLogs, setDebugLogs] = useState([])
   const [showLog, setShowLog] = useState(false)
+  const [dragging, setDragging] = useState(false)
   const linesRef = useRef({})
   const transcriptRef = useRef(null)
-  const logRef = useRef(null)
 
   useEffect(() => {
     window.api.transcribe.removeAllListeners()
@@ -40,7 +44,6 @@ export default function Transcribe({ config, onDone }) {
     })
     window.api.transcribe.onLog((msg) => {
       setDebugLogs(prev => [...prev, msg])
-      setTimeout(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, 30)
     })
     return () => window.api.transcribe.removeAllListeners()
   }, [])
@@ -48,6 +51,26 @@ export default function Transcribe({ config, onDone }) {
   const pickFiles = async () => {
     const picked = await window.api.dialog.openFiles()
     if (picked && picked.length) setFiles(picked)
+  }
+
+  const onDrop = (e) => {
+    e.preventDefault()
+    setDragging(false)
+    if (running) return
+    const paths = Array.from(e.dataTransfer.files)
+      .map(f => window.api.getPathForFile(f))
+      .filter(p => p && ACCEPTED_EXT.includes(p.split('.').pop().toLowerCase()))
+    if (paths.length) setFiles(paths)
+  }
+
+  const onDragOver = (e) => {
+    e.preventDefault()
+    if (!running && !dragging) setDragging(true)
+  }
+
+  const onDragLeave = (e) => {
+    e.preventDefault()
+    setDragging(false)
   }
 
   const pickOutputDir = async () => {
@@ -71,17 +94,23 @@ export default function Transcribe({ config, onDone }) {
   const activeLines = activeFile ? (lines[activeFile] || []) : []
 
   return (
-    <div className="transcribe">
+    <div className="transcribe" style={hidden ? { display: 'none' } : undefined}>
       <div className="left-panel">
-        <div className="drop-zone" onClick={pickFiles}>
+        <div
+          className={`drop-zone ${dragging ? 'dragover' : ''}`}
+          onClick={pickFiles}
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+        >
           {files.length === 0 ? (
             <>
               <span className="drop-icon"><FolderOpen size={28} /></span>
-              <span>Click to select audio / video files</span>
+              <span>{dragging ? 'Drop to add files' : 'Drop files here, or click to browse'}</span>
               <span className="drop-hint">mp3, mp4, m4a, wav, ogg, mkv…</span>
             </>
           ) : (
-            <span>{files.length} file{files.length > 1 ? 's' : ''} selected — click to change</span>
+            <span>{dragging ? 'Drop to replace selection' : `${files.length} file${files.length > 1 ? 's' : ''} selected — click or drop to change`}</span>
           )}
         </div>
 
@@ -93,10 +122,11 @@ export default function Transcribe({ config, onDone }) {
               <div key={f} className={`file-item ${state.status || ''}`}>
                 <span className="file-name">{name}</span>
                 <span className="file-status">
-                  {state.status === 'converting' && <><Loader2 size={11} className="spin" /> Converting...</>}
-                  {state.status === 'transcribing' && <><Mic size={11} /> Transcribing...</>}
+                  {state.status === 'converting' && <><Loader2 size={11} className="spin" /> Preparing audio…</>}
+                  {state.status === 'transcribing' && <><Waveform active bars={4} /> Transcribing…</>}
                   {state.status === 'done' && <><CheckCircle2 size={11} /> Done</>}
-                  {state.status === 'error' && <><XCircle size={11} /> {state.error || 'Error'}</>}
+                  {state.status === 'stopped' && <><Square size={11} /> Stopped{state.entry ? ' — partial saved' : ''}</>}
+                  {state.status === 'error' && <><XCircle size={11} /> {state.error || 'Something went wrong'}</>}
                   {!state.status && <><Clock size={11} /> Queued</>}
                 </span>
                 {state.lastSkip && (
@@ -149,8 +179,10 @@ export default function Transcribe({ config, onDone }) {
         <div className="transcript-header">
           {activeFile && <span className="transcript-title">{activeFile.split(/[\\/]/).pop()}</span>}
           {!activeFile && <span className="transcript-title" style={{ color: 'var(--text-dim)' }}>Transcript will appear here</span>}
-          <button className="log-toggle" onClick={() => setShowLog(v => !v)} title="Toggle debug log">
-            <Terminal size={13} /> {showLog ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+          <button className={`log-toggle ${showLog ? 'on' : ''}`} onClick={() => setShowLog(v => !v)} title="Toggle engine log">
+            <Terminal size={13} /> Engine log
+            {debugLogs.length > 0 && <span className="log-toggle-count">{debugLogs.length}</span>}
+            {showLog ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
           </button>
         </div>
         <div className="transcript" ref={transcriptRef} style={showLog ? { flex: '1 1 0', minHeight: 0 } : {}}>
@@ -160,14 +192,25 @@ export default function Transcribe({ config, onDone }) {
               <span className="line-text">{line.text}</span>
             </div>
           ))}
-          {running && activeLines.length === 0 && (
-            <div className="transcript-waiting">Waiting for output...</div>
+          {activeLines.length === 0 && (
+            <div className="transcript-idle">
+              <Waveform active={running} bars={7} className="transcript-idle-wave" />
+              <span className="transcript-idle-text">
+                {running
+                  ? 'Listening for the first words…'
+                  : 'Your transcript appears here, line by line, as the engine works.'}
+              </span>
+            </div>
           )}
         </div>
         {showLog && (
-          <div className="debug-log" ref={logRef}>
-            {debugLogs.length === 0 && <span className="debug-log-empty">No log yet — start a transcription.</span>}
-            {debugLogs.map((l, i) => <div key={i} className="debug-log-line">{l}</div>)}
+          <div className="engine-log-wrap">
+            <LogConsole
+              logs={debugLogs}
+              title="Engine log"
+              emptyHint="No engine output yet — start a transcription."
+              onClear={() => setDebugLogs([])}
+            />
           </div>
         )}
       </div>

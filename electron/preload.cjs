@@ -1,6 +1,9 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
+  // Resolve the absolute path of a dropped File (File.path was removed in
+  // Electron 32+; webUtils is the supported replacement).
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   setup: {
     check: () => ipcRenderer.invoke('setup:check'),
     start: () => ipcRenderer.invoke('setup:start'),
@@ -8,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
     onProgress: (cb) => ipcRenderer.on('setup:progress', (_, d) => cb(d)),
     onGpu: (cb) => ipcRenderer.on('setup:gpu', (_, d) => cb(d)),
     onDone: (cb) => ipcRenderer.on('setup:done', (_, d) => cb(d)),
+    removeData: () => ipcRenderer.invoke('setup:removeData'),
   },
   dialog: {
     openFiles: () => ipcRenderer.invoke('dialog:openFiles'),

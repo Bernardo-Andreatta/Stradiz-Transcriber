@@ -11,6 +11,33 @@ const http = require('http')
 const { spawn, execSync } = require('child_process')
 const os = require('os')
 
+// ---- Platform abstraction -------------------------------------------------
+// The app downloads prebuilt whisper-cli + ffmpeg binaries on first run. Their
+// names, download URLs, GPU backend, and how the archive is extracted all differ
+// per OS, so every part of the code that touches the binary layer goes through
+// the constants and helpers below instead of hard-coding Windows paths.
+const PLATFORM = process.platform               // 'win32' | 'darwin'
+const ARCH = process.arch                        // 'x64' | 'arm64'
+const IS_WIN = PLATFORM === 'win32'
+const IS_MAC = PLATFORM === 'darwin'
+const EXE = IS_WIN ? '.exe' : ''                 // executable suffix
+
+const RELEASE_BASE = 'https://github.com/Bernardo-Andreatta/Stradiz-Transcriber/releases/download/v1.0.0'
+
+// Whisper engine build per platform. Windows ships a Vulkan GPU build; macOS a
+// universal Metal build (one binary for Apple Silicon + Intel, every Mac has a
+// usable GPU). Both are self-hosted on our release.
+const WHISPER_BUILD = IS_MAC
+  ? { url: `${RELEASE_BASE}/whisper-metal-bin-universal.zip`, name: 'whisper-metal-bin-universal.zip', hasGpu: true }
+  : { url: `${RELEASE_BASE}/whisper-vulkan-bin-x64.zip`,      name: 'whisper-vulkan-bin-x64.zip',      hasGpu: true }
+
+// ffmpeg static build per platform. Windows pulls the well-known BtbN nightly;
+// macOS pulls the martin-riedl.de static builds (a single self-contained binary,
+// arm64 or amd64). Both are third-party static builds, same as before.
+const FFMPEG_BUILD = IS_MAC
+  ? { url: `https://ffmpeg.martin-riedl.de/redirect/latest/macos/${ARCH === 'arm64' ? 'arm64' : 'amd64'}/release/ffmpeg.zip`, name: `ffmpeg-mac-${ARCH}.zip` }
+  : { url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip', name: 'ffmpeg-win64-gpl.zip' }
+
 const isDev = !app.isPackaged
 const APP_DATA = path.join(os.homedir(), '.whisper-app')
 const WHISPER_DIR = path.join(APP_DATA, 'whisper.cpp')
@@ -46,7 +73,13 @@ function findExeInDir(dir, name) {
 const WHISPER_GPU_FLAG = path.join(APP_DATA, 'whisper_gpu.txt')
 
 function getWhisperCli() {
-  return findExeInDir(WHISPER_DIR, 'whisper-cli.exe') || path.join(WHISPER_DIR, 'whisper-cli.exe')
+  return findExeInDir(WHISPER_DIR, 'whisper-cli' + EXE) || path.join(WHISPER_DIR, 'whisper-cli' + EXE)
+}
+
+// chmod downloaded binaries +x on Unix — zip archives don't always preserve the
+// executable bit, and macOS won't spawn a file that isn't marked executable.
+function ensureExecutable(p) {
+  if (!IS_WIN && p) { try { fs.chmodSync(p, 0o755) } catch {} }
 }
 
 function getWhisperHasGpu() {
@@ -54,9 +87,14 @@ function getWhisperHasGpu() {
 }
 
 function getFFmpeg() {
-  const appFfmpeg = path.join(FFMPEG_DIR, 'bin', 'ffmpeg.exe')
-  if (fs.existsSync(appFfmpeg)) return appFfmpeg
-  return null
+  // Windows static build nests the binary under bin/; the macOS build ships it
+  // at the archive root. Check the Windows path first, then fall back to a
+  // recursive search that covers both layouts.
+  if (IS_WIN) {
+    const winFfmpeg = path.join(FFMPEG_DIR, 'bin', 'ffmpeg.exe')
+    if (fs.existsSync(winFfmpeg)) return winFfmpeg
+  }
+  return findExeInDir(FFMPEG_DIR, 'ffmpeg' + EXE)
 }
 
 function getModel() {
@@ -67,13 +105,62 @@ function getVadModel() {
   return path.join(MODELS_DIR, 'ggml-silero-v5.1.2.bin')
 }
 
+// ---- Component versioning -------------------------------------------------
+// Setup downloads each component only if it's missing OR out of date. Bump a
+// component's string here whenever you host a newer build/asset; on the next
+// setup the app re-downloads just that component and leaves the rest alone.
+const CURRENT_VERSIONS = {
+  whisper: IS_MAC ? 'metal-1.7.6' : 'vulkan-1',
+  ffmpeg: '1',
+  model: 'large-v3-turbo',
+  vad: 'silero-v5.1.2',
+}
+const INSTALLED_FILE = path.join(APP_DATA, 'installed.json')
+
+function readInstalled() {
+  try { return JSON.parse(fs.readFileSync(INSTALLED_FILE, 'utf8')) } catch { return {} }
+}
+function writeInstalled(patch) {
+  const next = { ...readInstalled(), ...patch }
+  try { fs.writeFileSync(INSTALLED_FILE, JSON.stringify(next, null, 2)) } catch {}
+}
+function isCurrent(component) {
+  return readInstalled()[component] === CURRENT_VERSIONS[component]
+}
+
+// Installs from before versioning existed have no installed.json. If every
+// component file is already present, treat them as current so upgrading the app
+// doesn't force a needless ~1.6 GB re-download — only real version bumps do.
+function backfillVersionsIfNeeded() {
+  if (fs.existsSync(INSTALLED_FILE)) return
+  const haveAll = fs.existsSync(getWhisperCli()) && !!getFFmpeg() &&
+    fs.existsSync(getModel()) && fs.existsSync(getVadModel())
+  if (haveAll) writeInstalled({ ...CURRENT_VERSIONS })
+}
+
 function detectGPU() {
+  // Every Mac runs the Metal backend, so report the GPU type without probing.
+  if (IS_MAC) return 'apple'
   try {
     const out = execSync('powershell -Command "Get-WmiObject Win32_VideoController | Select-Object -ExpandProperty Name"', { timeout: 8000 }).toString()
     if (/nvidia/i.test(out)) return 'nvidia'
     if (/amd|radeon/i.test(out)) return 'amd'
   } catch {}
   return 'cpu'
+}
+
+// HEAD a URL to confirm an asset is reachable before committing to a download.
+function headOk(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: 'HEAD', headers: { 'User-Agent': 'whisper-app/1.0' } }, res => {
+      res.resume()
+      if ([200, 301, 302, 307, 308].includes(res.statusCode)) resolve()
+      else reject(new Error(`HTTP ${res.statusCode}`))
+    })
+    req.on('error', reject)
+    req.setTimeout(15000, () => req.destroy(new Error('HEAD request timed out')))
+    req.end()
+  })
 }
 
 function fetchJson(url) {
@@ -159,8 +246,9 @@ function downloadFile(url, dest, onProgress) {
   })
 }
 
-// Extract a .zip on Windows. Tries bsdtar (fast, built into Win10+), then falls
-// back to PowerShell Expand-Archive. Throws a descriptive error if both fail.
+// Extract a .zip. Uses bsdtar (built into Win10+ and macOS), then falls back to
+// PowerShell Expand-Archive on Windows. On macOS it also clears the quarantine
+// flag so Gatekeeper doesn't block the freshly downloaded binaries from running.
 function extractZip(zipPath, destDir) {
   // Sanity check: a real zip starts with "PK". Catches truncated/HTML downloads
   // with a clear message instead of a cryptic extractor error.
@@ -177,22 +265,33 @@ function extractZip(zipPath, destDir) {
     // openSync/readSync failure — fall through and let the extractor try
   }
 
+  // macOS: drop the quarantine attribute on the extracted tree so spawning the
+  // unsigned binaries doesn't trigger a Gatekeeper "cannot be opened" block.
+  const clearQuarantine = () => {
+    if (IS_MAC) { try { execSync(`xattr -dr com.apple.quarantine "${destDir}"`) } catch {} }
+  }
+
   const escPs = (p) => p.replace(/'/g, "''")
   try {
     execSync(`tar -xf "${zipPath}" -C "${destDir}"`, { stdio: ['ignore', 'ignore', 'pipe'] })
+    clearQuarantine()
     return
   } catch (tarErr) {
-    try {
-      execSync(
-        `powershell.exe -NoProfile -NonInteractive -Command "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath '${escPs(zipPath)}' -DestinationPath '${escPs(destDir)}' -Force"`,
-        { stdio: ['ignore', 'ignore', 'pipe'], timeout: 600000 }
-      )
-      return
-    } catch (psErr) {
-      const tarMsg = (tarErr.stderr || tarErr.message || '').toString().split('\n')[0].trim()
-      const psMsg = (psErr.stderr || psErr.message || '').toString().split('\n')[0].trim()
-      throw new Error(`extraction failed — tar: ${tarMsg || 'failed'}; Expand-Archive: ${psMsg || 'failed'}`)
+    if (IS_WIN) {
+      try {
+        execSync(
+          `powershell.exe -NoProfile -NonInteractive -Command "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath '${escPs(zipPath)}' -DestinationPath '${escPs(destDir)}' -Force"`,
+          { stdio: ['ignore', 'ignore', 'pipe'], timeout: 600000 }
+        )
+        return
+      } catch (psErr) {
+        const tarMsg = (tarErr.stderr || tarErr.message || '').toString().split('\n')[0].trim()
+        const psMsg = (psErr.stderr || psErr.message || '').toString().split('\n')[0].trim()
+        throw new Error(`extraction failed — tar: ${tarMsg || 'failed'}; Expand-Archive: ${psMsg || 'failed'}`)
+      }
     }
+    const tarMsg = (tarErr.stderr || tarErr.message || '').toString().split('\n')[0].trim()
+    throw new Error(`extraction failed — tar: ${tarMsg || 'failed'}`)
   }
 }
 
@@ -220,16 +319,20 @@ async function setupWhisper(win) {
   const gpu = detectGPU()
   send('setup:gpu', gpu)
 
-  // Check if already set up
+  // Treat a complete pre-versioning install as up to date so we don't re-download it.
+  backfillVersionsIfNeeded()
+
+  // Each component is (re)installed only if its file is missing or its recorded
+  // version is older than what this build expects.
   const whisperCli = getWhisperCli()
   const ffmpeg = getFFmpeg()
   const model = getModel()
 
   const vadModel = getVadModel()
-  const needsWhisper = !fs.existsSync(whisperCli)
-  const needsFfmpeg = !ffmpeg
-  const needsModel = !fs.existsSync(model)
-  const needsVad = !fs.existsSync(vadModel)
+  const needsWhisper = !fs.existsSync(whisperCli) || !isCurrent('whisper')
+  const needsFfmpeg = !ffmpeg || !isCurrent('ffmpeg')
+  const needsModel = !fs.existsSync(model) || !isCurrent('model')
+  const needsVad = !fs.existsSync(vadModel) || !isCurrent('vad')
 
   if (!needsWhisper && !needsFfmpeg && !needsModel && !needsVad) {
     send('setup:done', { whisperCli, ffmpeg: getFFmpeg(), model, vadModel, gpu })
@@ -239,28 +342,17 @@ async function setupWhisper(win) {
   // Download whisper-cli if needed
   if (needsWhisper) {
     // Resolve which build to download once (URL resolution isn't retried, the
-    // download/extract is). Prefer our Vulkan build; fall back to plain CPU build.
-    let downloadUrl = null
-    let assetName = null
-    let hasGpu = false
+    // download/extract is). Prefer our platform build; on Windows fall back to
+    // the upstream CPU build if our release asset is unreachable.
+    let downloadUrl = WHISPER_BUILD.url
+    let assetName = WHISPER_BUILD.name
+    let hasGpu = WHISPER_BUILD.hasGpu
 
-    send('setup:status', 'Checking Whisper Vulkan build availability...')
-    try {
-      const vulkanUrl = 'https://github.com/Bernardo-Andreatta/Stradiz-Transcriber/releases/download/v1.0.0/whisper-vulkan-bin-x64.zip'
-      await new Promise((resolve, reject) => {
-        const req = https.request(vulkanUrl, { method: 'HEAD', headers: { 'User-Agent': 'whisper-app/1.0' } }, res => {
-          res.resume()
-          if ([200, 301, 302, 307, 308].includes(res.statusCode)) resolve()
-          else reject(new Error(`HTTP ${res.statusCode}`))
-        })
-        req.on('error', reject)
-        req.setTimeout(15000, () => req.destroy(new Error('HEAD request timed out')))
-        req.end()
-      })
-      downloadUrl = vulkanUrl
-      assetName = 'whisper-vulkan-bin-x64.zip'
-      hasGpu = true
-    } catch {
+    send('setup:status', `Checking Whisper ${IS_MAC ? 'Metal' : 'Vulkan'} build availability...`)
+    let available = false
+    try { await headOk(downloadUrl); available = true } catch {}
+
+    if (!available && IS_WIN) {
       try {
         send('setup:status', 'Fetching latest Whisper release info...')
         const release = await fetchJson('https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest')
@@ -268,12 +360,12 @@ async function setupWhisper(win) {
         const asset =
           assets.find(a => a.name === 'whisper-bin-x64.zip') ||
           assets.find(a => /x64/i.test(a.name) && a.name.endsWith('.zip') && !/cuda|cublas|blas/i.test(a.name))
-        if (asset) { downloadUrl = asset.browser_download_url; assetName = asset.name }
+        if (asset) { downloadUrl = asset.browser_download_url; assetName = asset.name; hasGpu = false; available = true }
       } catch {}
     }
 
-    if (!downloadUrl) {
-      send('setup:status', 'Could not reach the download server for Whisper. Check your connection and retry setup.')
+    if (!available) {
+      send('setup:status', `Could not reach the download server for the Whisper ${IS_MAC ? 'macOS' : 'Windows'} build. Check your connection and retry setup.`)
     } else {
       const zipPath = path.join(APP_DATA, 'whisper.zip')
       await withRetry('Whisper', send, async (attempt) => {
@@ -289,10 +381,13 @@ async function setupWhisper(win) {
         send('setup:status', 'Extracting Whisper...')
         extractZip(zipPath, WHISPER_DIR)
         try { fs.unlinkSync(zipPath) } catch {}
-        if (!findExeInDir(WHISPER_DIR, 'whisper-cli.exe')) {
-          throw new Error('whisper-cli.exe not found after extraction')
+        const cliPath = findExeInDir(WHISPER_DIR, 'whisper-cli' + EXE)
+        if (!cliPath) {
+          throw new Error(`whisper-cli${EXE} not found after extraction`)
         }
+        ensureExecutable(cliPath)
         fs.writeFileSync(WHISPER_GPU_FLAG, hasGpu ? '1' : '0')
+        writeInstalled({ whisper: CURRENT_VERSIONS.whisper })
       })
     }
   }
@@ -308,21 +403,28 @@ async function setupWhisper(win) {
       fs.mkdirSync(FFMPEG_DIR, { recursive: true })
 
       await downloadFile(
-        'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+        FFMPEG_BUILD.url,
         ffmpegZip,
         (pct, rcv, total) => send('setup:progress', { task: 'ffmpeg', pct, rcv, total })
       )
       send('setup:status', 'Extracting ffmpeg...')
       extractZip(ffmpegZip, FFMPEG_DIR)
-      // Flatten the inner versioned folder so bin/ffmpeg.exe is directly under FFMPEG_DIR
-      const inner = fs.readdirSync(FFMPEG_DIR).find(f => f.startsWith('ffmpeg'))
+      // The Windows build nests everything in a versioned folder (ffmpeg-N.N-...);
+      // flatten it so bin/ffmpeg.exe sits directly under FFMPEG_DIR. The macOS
+      // build ships the binary at the root, so only flatten real subfolders.
+      const inner = fs.readdirSync(FFMPEG_DIR).find(f =>
+        f.startsWith('ffmpeg') && fs.statSync(path.join(FFMPEG_DIR, f)).isDirectory()
+      )
       if (inner) {
         const innerPath = path.join(FFMPEG_DIR, inner)
         fs.cpSync(innerPath, FFMPEG_DIR, { recursive: true })
         fs.rmSync(innerPath, { recursive: true, force: true })
       }
       try { fs.unlinkSync(ffmpegZip) } catch {}
-      if (!getFFmpeg()) throw new Error('ffmpeg.exe not found after extraction')
+      const ffmpegPath = getFFmpeg()
+      if (!ffmpegPath) throw new Error(`ffmpeg${EXE} not found after extraction`)
+      ensureExecutable(ffmpegPath)
+      writeInstalled({ ffmpeg: CURRENT_VERSIONS.ffmpeg })
     })
   }
 
@@ -337,6 +439,7 @@ async function setupWhisper(win) {
         modelPath,
         (pct, rcv, total) => send('setup:progress', { task: 'model', pct, rcv, total })
       )
+      writeInstalled({ model: CURRENT_VERSIONS.model })
     })
   }
 
@@ -351,6 +454,7 @@ async function setupWhisper(win) {
         vadPath,
         (pct, rcv, total) => send('setup:progress', { task: 'vad', pct, rcv, total })
       )
+      writeInstalled({ vad: CURRENT_VERSIONS.vad })
     })
   }
 
@@ -367,6 +471,16 @@ let mainWindow
 let currentConfig = {}
 let currentProc = null
 let stopRequested = false
+
+// Force-kill whatever child process is running right now (ffmpeg conversion,
+// segment extraction, or whisper). SIGKILL because both ffmpeg and whisper
+// ignore SIGTERM while busy — so Stop must always terminate them immediately.
+function killCurrentProc() {
+  const proc = currentProc
+  currentProc = null
+  if (!proc) return
+  try { proc.kill('SIGKILL') } catch {}
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -408,14 +522,41 @@ ipcMain.handle('setup:start', async () => {
   await setupWhisper(mainWindow)
 })
 
+// macOS DMG apps can't run an uninstall script, so this is the in-app way to
+// reclaim the ~1.6 GB of downloaded data (also works on Windows). Removes the
+// engine, ffmpeg, and model but keeps catalog.json so the user's transcription
+// library survives — their .srt/.txt files live next to the source media anyway.
+ipcMain.handle('setup:removeData', async () => {
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Cancel', 'Remove'],
+    defaultId: 1,
+    cancelId: 0,
+    title: 'Remove downloaded data',
+    message: 'Remove downloaded data?',
+    detail: 'Deletes the Whisper engine, FFmpeg, and the model (~1.6 GB) from ~/.whisper-app. Your transcription catalog is kept, and you can re-download anytime from Setup.',
+  })
+  if (response !== 1) return { ok: false, canceled: true }
+  for (const target of [WHISPER_DIR, FFMPEG_DIR, MODELS_DIR, WHISPER_GPU_FLAG, INSTALLED_FILE]) {
+    try { if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true }) } catch {}
+  }
+  return { ok: true }
+})
+
 ipcMain.handle('setup:check', async () => {
+  backfillVersionsIfNeeded()
   const whisperCli = getWhisperCli()
   const ffmpeg = getFFmpeg()
   const model = getModel()
   const vadModel = getVadModel()
   const gpu = detectGPU()
+  const filesExist = fs.existsSync(whisperCli) && !!ffmpeg && fs.existsSync(model) && fs.existsSync(vadModel)
+  const versionsCurrent = isCurrent('whisper') && isCurrent('ffmpeg') && isCurrent('model') && isCurrent('vad')
   return {
-    ready: fs.existsSync(whisperCli) && !!ffmpeg && fs.existsSync(model) && fs.existsSync(vadModel),
+    // Ready only when everything is present AND current — an outdated component
+    // routes the user back to Setup, which then re-downloads just that piece.
+    ready: filesExist && versionsCurrent,
+    updateAvailable: filesExist && !versionsCurrent,
     whisperCli,
     ffmpeg,
     model,
@@ -508,10 +649,17 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         : []
       const ff = spawn(ffmpegExe, ['-i', filePath, ...silenceFilter,
         '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath, '-y'])
+      currentProc = ff
       ff.stderr.on('data', d => send('transcribe:log', `[ffmpeg] ${d.toString().trim()}`))
-      ff.on('close', code => { send('transcribe:log', `[ffmpeg] exit code ${code}`); resolve(code === 0) })
-      ff.on('error', err => { send('transcribe:log', `[ffmpeg] error: ${err.message}`); resolve(false) })
+      ff.on('close', code => { currentProc = null; send('transcribe:log', `[ffmpeg] exit code ${code}`); resolve(code === 0) })
+      ff.on('error', err => { currentProc = null; send('transcribe:log', `[ffmpeg] error: ${err.message}`); resolve(false) })
     })
+    // Stop pressed during conversion: ffmpeg was killed, drop the partial wav and bail.
+    if (stopRequested) {
+      if (fs.existsSync(wavPath)) try { fs.unlinkSync(wavPath) } catch {}
+      send('transcribe:file', { file: filePath, status: 'stopped' })
+      break
+    }
     if (!convertOk) {
       send('transcribe:file', { file: filePath, status: 'error', error: 'ffmpeg conversion failed' })
       continue
@@ -534,9 +682,16 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
             '-ss', (offsetMs / 1000).toString(), '-i', wavPath,
             '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', tempSeg, '-y'
           ])
-          ff.on('close', () => resolve())
+          currentProc = ff
+          ff.on('close', () => { currentProc = null; resolve() })
+          ff.on('error', () => { currentProc = null; resolve() })
         })
         segWav = tempSeg
+        // Stop pressed during segment extraction: abandon this pass.
+        if (stopRequested) {
+          if (tempSeg && fs.existsSync(tempSeg)) try { fs.unlinkSync(tempSeg) } catch {}
+          break
+        }
       }
 
       const runLines = []
@@ -548,7 +703,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         const gpuArgs = config.whisperHasGpu ? [] : ['-ng']
         const args = ['-m', model, '-l', 'pt', '-f', segWav,
           '--no-speech-thold', '0.3', '--entropy-thold', '2.8',
-          '--no-fallback', '--print-progress', '-nfa', ...gpuArgs]
+          '--no-fallback', '--print-progress', ...gpuArgs]
         send('transcribe:log', `[whisper] spawn (pass ${skip + 1}): whisper-cli ${args.join(' ')}`)
         const proc = spawn(whisperCli, args)
         currentProc = proc
@@ -635,6 +790,29 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
 
     if (fs.existsSync(wavPath)) try { fs.unlinkSync(wavPath) } catch {}
 
+    // Stop pressed mid-transcription: keep whatever lines were captured (already
+    // written to SRT/TXT each pass), register them, mark the file stopped, exit.
+    if (stopRequested) {
+      let entry
+      if (allLines.length > 0) {
+        entry = {
+          id: Date.now() + Math.random(),
+          name: path.basename(filePath),
+          filePath,
+          srtPath: fs.existsSync(finalSrt) ? finalSrt : null,
+          txtPath: fs.existsSync(finalTxt) ? finalTxt : null,
+          lines: allLines,
+          date: new Date().toISOString(),
+        }
+        const catalog = loadCatalog()
+        catalog.unshift(entry)
+        saveCatalog(catalog)
+        results.push(entry)
+      }
+      send('transcribe:file', { file: filePath, status: 'stopped', entry })
+      break
+    }
+
     if (allLines.length === 0 && whisperExitCode !== 0) {
       send('transcribe:file', { file: filePath, status: 'error', error: `Whisper crashed (code ${whisperExitCode}) — check the terminal for details` })
       continue
@@ -664,10 +842,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
 
 ipcMain.handle('transcribe:stop', () => {
   stopRequested = true
-  if (currentProc) {
-    currentProc.kill()
-    currentProc = null
-  }
+  killCurrentProc()
 })
 
 
