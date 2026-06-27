@@ -77,7 +77,9 @@ export default function App() {
 
       <main className="main">
         {screen === 'setup' && <Setup onReady={(cfg) => { setConfig(cfg); setScreen('transcribe') }} />}
-        {screen === 'transcribe' && config && <Transcribe config={config} onDone={() => setScreen('catalog')} />}
+        {/* Transcribe stays mounted once set up so an in-progress transcription
+            keeps running and updating when you switch tabs — only hidden. */}
+        {config && <Transcribe config={config} onDone={() => setScreen('catalog')} hidden={screen !== 'transcribe'} />}
         {screen === 'catalog' && config && <Catalog />}
         {screen === 'transcribe' && !config && <div className="center-msg">Complete setup first.</div>}
       </main>

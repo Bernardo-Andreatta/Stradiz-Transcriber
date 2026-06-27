@@ -4,7 +4,9 @@ import LogConsole from '../components/LogConsole.jsx'
 import Waveform from '../components/Waveform.jsx'
 import './Transcribe.css'
 
-export default function Transcribe({ config, onDone }) {
+const ACCEPTED_EXT = ['mp3', 'mp4', 'm4a', 'wav', 'ogg', 'flac', 'mkv', 'mov', 'avi', 'webm', 'aac']
+
+export default function Transcribe({ config, onDone, hidden }) {
   const [files, setFiles] = useState([])
   const [running, setRunning] = useState(false)
   const [fileStates, setFileStates] = useState({})
@@ -13,6 +15,7 @@ export default function Transcribe({ config, onDone }) {
   const [outputDir, setOutputDir] = useState(null)
   const [debugLogs, setDebugLogs] = useState([])
   const [showLog, setShowLog] = useState(false)
+  const [dragging, setDragging] = useState(false)
   const linesRef = useRef({})
   const transcriptRef = useRef(null)
 
@@ -50,6 +53,26 @@ export default function Transcribe({ config, onDone }) {
     if (picked && picked.length) setFiles(picked)
   }
 
+  const onDrop = (e) => {
+    e.preventDefault()
+    setDragging(false)
+    if (running) return
+    const paths = Array.from(e.dataTransfer.files)
+      .map(f => window.api.getPathForFile(f))
+      .filter(p => p && ACCEPTED_EXT.includes(p.split('.').pop().toLowerCase()))
+    if (paths.length) setFiles(paths)
+  }
+
+  const onDragOver = (e) => {
+    e.preventDefault()
+    if (!running && !dragging) setDragging(true)
+  }
+
+  const onDragLeave = (e) => {
+    e.preventDefault()
+    setDragging(false)
+  }
+
   const pickOutputDir = async () => {
     const dir = await window.api.dialog.openFolder()
     if (dir) setOutputDir(dir)
@@ -71,17 +94,23 @@ export default function Transcribe({ config, onDone }) {
   const activeLines = activeFile ? (lines[activeFile] || []) : []
 
   return (
-    <div className="transcribe">
+    <div className="transcribe" style={hidden ? { display: 'none' } : undefined}>
       <div className="left-panel">
-        <div className="drop-zone" onClick={pickFiles}>
+        <div
+          className={`drop-zone ${dragging ? 'dragover' : ''}`}
+          onClick={pickFiles}
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+        >
           {files.length === 0 ? (
             <>
               <span className="drop-icon"><FolderOpen size={28} /></span>
-              <span>Click to select audio / video files</span>
+              <span>{dragging ? 'Drop to add files' : 'Drop files here, or click to browse'}</span>
               <span className="drop-hint">mp3, mp4, m4a, wav, ogg, mkv…</span>
             </>
           ) : (
-            <span>{files.length} file{files.length > 1 ? 's' : ''} selected — click to change</span>
+            <span>{dragging ? 'Drop to replace selection' : `${files.length} file${files.length > 1 ? 's' : ''} selected — click or drop to change`}</span>
           )}
         </div>
 

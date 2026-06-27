@@ -26,6 +26,7 @@ export default function Setup({ onReady }) {
   const [progress, setProgress] = useState({})
   const [downloading, setDownloading] = useState(false)
   const [done, setDone] = useState(false)
+  const [updateAvailable, setUpdateAvailable] = useState(false)
 
   const addLog = (msg) => setLogs(prev => [...prev, msg])
 
@@ -46,16 +47,20 @@ export default function Setup({ onReady }) {
       }
     })
     window.api.setup.check().then(res => {
+      if (res.gpu) setGpu(res.gpu)
       if (res.ready) {
-        setGpu(res.gpu)
         setStatus('Already configured — ready to transcribe!')
         setDone(true)
+      } else if (res.updateAvailable) {
+        setUpdateAvailable(true)
+        setStatus('A newer transcription engine is available. Update to keep transcribing.')
       }
     })
   }, [])
 
   const start = async () => {
     setDownloading(true)
+    setUpdateAvailable(false)
     setLogs([])
     setStatus('Starting setup...')
     await window.api.setup.start()
@@ -114,7 +119,7 @@ export default function Setup({ onReady }) {
 
         {!done && (
           <button className="btn-primary start-btn" onClick={start} disabled={downloading}>
-            {downloading ? 'Setting up...' : 'Download & Set Up'}
+            {downloading ? 'Setting up...' : updateAvailable ? 'Update engine' : 'Download & set up'}
           </button>
         )}
 

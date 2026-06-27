@@ -105,6 +105,39 @@ function getVadModel() {
   return path.join(MODELS_DIR, 'ggml-silero-v5.1.2.bin')
 }
 
+// ---- Component versioning -------------------------------------------------
+// Setup downloads each component only if it's missing OR out of date. Bump a
+// component's string here whenever you host a newer build/asset; on the next
+// setup the app re-downloads just that component and leaves the rest alone.
+const CURRENT_VERSIONS = {
+  whisper: IS_MAC ? 'metal-1.7.6' : 'vulkan-1',
+  ffmpeg: '1',
+  model: 'large-v3-turbo',
+  vad: 'silero-v5.1.2',
+}
+const INSTALLED_FILE = path.join(APP_DATA, 'installed.json')
+
+function readInstalled() {
+  try { return JSON.parse(fs.readFileSync(INSTALLED_FILE, 'utf8')) } catch { return {} }
+}
+function writeInstalled(patch) {
+  const next = { ...readInstalled(), ...patch }
+  try { fs.writeFileSync(INSTALLED_FILE, JSON.stringify(next, null, 2)) } catch {}
+}
+function isCurrent(component) {
+  return readInstalled()[component] === CURRENT_VERSIONS[component]
+}
+
+// Installs from before versioning existed have no installed.json. If every
+// component file is already present, treat them as current so upgrading the app
+// doesn't force a needless ~1.6 GB re-download — only real version bumps do.
+function backfillVersionsIfNeeded() {
+  if (fs.existsSync(INSTALLED_FILE)) return
+  const haveAll = fs.existsSync(getWhisperCli()) && !!getFFmpeg() &&
+    fs.existsSync(getModel()) && fs.existsSync(getVadModel())
+  if (haveAll) writeInstalled({ ...CURRENT_VERSIONS })
+}
+
 function detectGPU() {
   // Every Mac runs the Metal backend, so report the GPU type without probing.
   if (IS_MAC) return 'apple'
@@ -286,16 +319,20 @@ async function setupWhisper(win) {
   const gpu = detectGPU()
   send('setup:gpu', gpu)
 
-  // Check if already set up
+  // Treat a complete pre-versioning install as up to date so we don't re-download it.
+  backfillVersionsIfNeeded()
+
+  // Each component is (re)installed only if its file is missing or its recorded
+  // version is older than what this build expects.
   const whisperCli = getWhisperCli()
   const ffmpeg = getFFmpeg()
   const model = getModel()
 
   const vadModel = getVadModel()
-  const needsWhisper = !fs.existsSync(whisperCli)
-  const needsFfmpeg = !ffmpeg
-  const needsModel = !fs.existsSync(model)
-  const needsVad = !fs.existsSync(vadModel)
+  const needsWhisper = !fs.existsSync(whisperCli) || !isCurrent('whisper')
+  const needsFfmpeg = !ffmpeg || !isCurrent('ffmpeg')
+  const needsModel = !fs.existsSync(model) || !isCurrent('model')
+  const needsVad = !fs.existsSync(vadModel) || !isCurrent('vad')
 
   if (!needsWhisper && !needsFfmpeg && !needsModel && !needsVad) {
     send('setup:done', { whisperCli, ffmpeg: getFFmpeg(), model, vadModel, gpu })
@@ -350,6 +387,7 @@ async function setupWhisper(win) {
         }
         ensureExecutable(cliPath)
         fs.writeFileSync(WHISPER_GPU_FLAG, hasGpu ? '1' : '0')
+        writeInstalled({ whisper: CURRENT_VERSIONS.whisper })
       })
     }
   }
@@ -386,6 +424,7 @@ async function setupWhisper(win) {
       const ffmpegPath = getFFmpeg()
       if (!ffmpegPath) throw new Error(`ffmpeg${EXE} not found after extraction`)
       ensureExecutable(ffmpegPath)
+      writeInstalled({ ffmpeg: CURRENT_VERSIONS.ffmpeg })
     })
   }
 
@@ -400,6 +439,7 @@ async function setupWhisper(win) {
         modelPath,
         (pct, rcv, total) => send('setup:progress', { task: 'model', pct, rcv, total })
       )
+      writeInstalled({ model: CURRENT_VERSIONS.model })
     })
   }
 
@@ -414,6 +454,7 @@ async function setupWhisper(win) {
         vadPath,
         (pct, rcv, total) => send('setup:progress', { task: 'vad', pct, rcv, total })
       )
+      writeInstalled({ vad: CURRENT_VERSIONS.vad })
     })
   }
 
@@ -496,20 +537,26 @@ ipcMain.handle('setup:removeData', async () => {
     detail: 'Deletes the Whisper engine, FFmpeg, and the model (~1.6 GB) from ~/.whisper-app. Your transcription catalog is kept, and you can re-download anytime from Setup.',
   })
   if (response !== 1) return { ok: false, canceled: true }
-  for (const target of [WHISPER_DIR, FFMPEG_DIR, MODELS_DIR, WHISPER_GPU_FLAG]) {
+  for (const target of [WHISPER_DIR, FFMPEG_DIR, MODELS_DIR, WHISPER_GPU_FLAG, INSTALLED_FILE]) {
     try { if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true }) } catch {}
   }
   return { ok: true }
 })
 
 ipcMain.handle('setup:check', async () => {
+  backfillVersionsIfNeeded()
   const whisperCli = getWhisperCli()
   const ffmpeg = getFFmpeg()
   const model = getModel()
   const vadModel = getVadModel()
   const gpu = detectGPU()
+  const filesExist = fs.existsSync(whisperCli) && !!ffmpeg && fs.existsSync(model) && fs.existsSync(vadModel)
+  const versionsCurrent = isCurrent('whisper') && isCurrent('ffmpeg') && isCurrent('model') && isCurrent('vad')
   return {
-    ready: fs.existsSync(whisperCli) && !!ffmpeg && fs.existsSync(model) && fs.existsSync(vadModel),
+    // Ready only when everything is present AND current — an outdated component
+    // routes the user back to Setup, which then re-downloads just that piece.
+    ready: filesExist && versionsCurrent,
+    updateAvailable: filesExist && !versionsCurrent,
     whisperCli,
     ffmpeg,
     model,
