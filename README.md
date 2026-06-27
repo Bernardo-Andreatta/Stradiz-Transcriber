@@ -23,9 +23,21 @@ A local, privacy-first audio transcription desktop app built on [whisper.cpp](ht
 
 Download the latest build for your OS from the [Releases](../../releases) page. No dependencies to install manually — the app downloads the right whisper.cpp engine, FFmpeg, and the model on first launch (~1.6 GB), then runs fully offline.
 
+### Which build do I download?
+
+| Your machine | Download |
+|---|---|
+| Windows 10/11 (64-bit) | `Stradiz.Transcriber.Setup.exe` |
+| Mac with Apple Silicon (M1/M2/M3/M4) | `Stradiz.Transcriber-arm64.dmg` |
+| Mac with Intel processor | `Stradiz.Transcriber-x64.dmg` |
+
+**Not sure which Mac you have?** Click the  Apple menu → **About This Mac**. If it says **Apple M1/M2/M3/M4** (or "Apple silicon"), use `arm64`. If it lists an **Intel** chip, use `x64`. (Picking the wrong one still runs, just slower under translation — but match it for best speed.)
+
+The `whisper-*.zip` assets on the release are the engine binaries the app downloads for you. You don't download those yourself.
+
 ### Windows
 
-Download and run `Stradiz Transcriber Setup.exe`. First launch pulls the Vulkan-accelerated whisper.cpp build + FFmpeg + model.
+Run `Stradiz.Transcriber.Setup.exe`. First launch pulls the Vulkan-accelerated whisper.cpp build + FFmpeg + model.
 
 > **SmartScreen warning:** Because the installer isn't code-signed yet, Windows may show "Windows protected your PC". Click **More info → Run anyway** to proceed — the app is safe.
 
@@ -33,9 +45,9 @@ Download and run `Stradiz Transcriber Setup.exe`. First launch pulls the Vulkan-
 
 ### macOS (Apple Silicon + Intel)
 
-Download the `.dmg` (`Stradiz Transcriber-arm64.dmg` for Apple Silicon, `-x64.dmg` for Intel), open it, and drag the app to Applications. First launch pulls a universal Metal whisper.cpp build + FFmpeg + model.
+Open the `.dmg` and drag **Stradiz Transcriber** into the **Applications** folder. First launch pulls a universal Metal whisper.cpp build + FFmpeg + model.
 
-> **Gatekeeper warning:** The app isn't notarized yet, so macOS will say it "can't be opened because Apple cannot check it for malware." Right-click the app → **Open** → **Open** (only needed once). Alternatively: `xattr -dr com.apple.quarantine "/Applications/Stradiz Transcriber.app"`.
+> **First open — "damaged" or "unidentified developer":** The app isn't notarized yet, so macOS blocks it the first time. **Right-click (or Control-click) the app in Applications → Open → Open.** You only do this once; afterward it opens normally. See [Troubleshooting](#troubleshooting) if the dialog gives you no Open button.
 
 > Files are stored in `~/.whisper-app`.
 
@@ -47,6 +59,48 @@ Download the `.dmg` (`Stradiz Transcriber-arm64.dmg` for Apple Silicon, `-x64.dm
 4. When done, the app switches to **Catalog** automatically
 5. Click any entry to play the audio with synchronized subtitles
 6. Double-click a subtitle line to edit it; click **Save edits** when done
+
+## Troubleshooting
+
+### macOS: "Stradiz Transcriber is damaged and can't be opened" (no Open button)
+
+This happens when the app is launched straight from the `.dmg` or from Downloads while still quarantined — macOS shows the harsh version of the warning with only "Move to Trash."
+
+1. **First, drag the app into `/Applications`** (don't run it from the disk image).
+2. **Right-click the app → Open → Open.** This is the normal first-run unlock.
+3. If you still get no Open button, clear the quarantine flag from Terminal:
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Stradiz Transcriber.app"
+   ```
+   Then open it normally. (This is safe — it only removes the "downloaded from the internet" mark. The app is open-source; you can read or build it yourself.)
+
+The lasting fix is Apple notarization, which isn't in place yet — that's the only reason the warning appears.
+
+### Windows: "Windows protected your PC" (SmartScreen)
+
+The installer isn't code-signed yet. Click **More info → Run anyway**.
+
+### Setup download fails or stalls
+
+First launch downloads ~1.6 GB (engine + FFmpeg + model). If it fails:
+
+- Check your internet connection and click **Download & set up** again — it retries automatically and resumes from where each component left off.
+- Corporate networks/VPNs sometimes block GitHub or Hugging Face downloads; try another network.
+- Open the **Setup activity** log (shown during setup) to see exactly which step failed, then copy it if you need to report the issue.
+
+### Transcription fails or quits immediately
+
+- Re-run **Setup** — if the engine or FFmpeg download was incomplete, Setup re-fetches the missing pieces.
+- Open the **Engine log** (terminal icon, top-right of the Transcribe screen) to see the ffmpeg/whisper output and the exit code.
+
+### GPU not detected / running on CPU
+
+- **macOS:** every Mac uses the Metal GPU automatically — no setup.
+- **Windows:** GPU acceleration uses Vulkan (NVIDIA/AMD). If it falls back to CPU, update your graphics drivers. CPU still works, just slower.
+
+### Where are my files?
+
+Models and the engine live in `~/.whisper-app` (macOS) or `%USERPROFILE%\.whisper-app` (Windows). Deleting that folder triggers a fresh download on next launch. Your transcripts (`.srt` / `.txt`) are saved next to each source file (or your chosen output folder), not in there.
 
 ## Development
 
