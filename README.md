@@ -133,6 +133,42 @@ gh release upload v1.0.0 "release/binaries/whisper-metal-bin-universal.zip" \
   --repo Bernardo-Andreatta/Stradiz-Transcriber
 ```
 
+## Releasing
+
+Releases are built by GitHub Actions (`.github/workflows/release.yml`) — no local Windows machine needed. Pushing a version tag builds the Windows `.exe` and the macOS DMGs on their native runners and attaches them to that tag's GitHub release.
+
+### Two kinds of asset, on purpose
+
+The app ships in two layers that version independently:
+
+| Layer | What | Where it lives | When it changes |
+|---|---|---|---|
+| **Installer** | the Electron app shell (`.exe` / `.dmg`) | the release for each version tag (`v1.0.1`, …) | every app release |
+| **Engine** | whisper.cpp + ffmpeg binaries + model | hosted once on the **`v1.0.0`** release | only when the engine itself changes |
+
+`RELEASE_BASE` in `electron/main.cjs` points the in-app downloader at the **`v1.0.0`** engine assets. It deliberately does **not** track the app version — bumping the app to `v1.0.2` does not move the engine. Don't change `RELEASE_BASE` unless you re-host the engine zips somewhere else.
+
+### Cut an app release
+
+1. Land your changes on `main` via PR.
+2. Bump the version in **`package.json`** and the About modal in **`src/App.jsx`** (one PR).
+3. Tag and push — CI does the rest:
+   ```bash
+   git checkout main && git pull
+   git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
+4. Actions builds both OSes and attaches `Stradiz.Transcriber.Setup.exe` + the two DMGs to the `vX.Y.Z` release.
+
+Tag the version *after* the bump is on `main` — otherwise electron-builder packages the old version number onto the new release.
+
+### Ship a new engine (whisper / ffmpeg / model)
+
+The app re-downloads a component only when it's missing or **out of date**, tracked per component in `~/.whisper-app/installed.json`.
+
+1. Bump the relevant string in `CURRENT_VERSIONS` (`electron/main.cjs`).
+2. Re-host the matching asset on the `v1.0.0` release (e.g. run `scripts/build-mac-whisper.sh` for whisper, then `gh release upload v1.0.0 …`).
+3. On next launch, Setup shows **"Update engine"** and re-downloads only the changed component — existing installs aren't forced to refetch everything.
+
 ## Tech stack
 
 | Layer | Technology |
