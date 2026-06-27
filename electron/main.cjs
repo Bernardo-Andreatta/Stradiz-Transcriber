@@ -472,14 +472,27 @@ let currentConfig = {}
 let currentProc = null
 let stopRequested = false
 
-// Force-kill whatever child process is running right now (ffmpeg conversion,
-// segment extraction, or whisper). SIGKILL because both ffmpeg and whisper
-// ignore SIGTERM while busy — so Stop must always terminate them immediately.
+// If whisper emits no output at all for this long, treat it as hung and kill it
+// rather than waiting forever (some inputs wedge the decoder with no progress).
+const WHISPER_STALL_MS = 180000
+
+// Force-terminate a child process. On Windows a wedged process (and any children
+// it spawned) won't reliably die from Node's signal-based kill, so use taskkill
+// to take down the whole tree; elsewhere SIGKILL. Both ffmpeg and whisper ignore
+// SIGTERM while busy, so Stop must always force.
+function forceKill(proc) {
+  if (!proc) return
+  if (IS_WIN && proc.pid) {
+    try { execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' }) } catch {}
+  } else {
+    try { proc.kill('SIGKILL') } catch {}
+  }
+}
+
 function killCurrentProc() {
   const proc = currentProc
   currentProc = null
-  if (!proc) return
-  try { proc.kill('SIGKILL') } catch {}
+  forceKill(proc)
 }
 
 function createWindow() {
@@ -669,6 +682,8 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
 
     const allLines = []
     let offsetMs = 0
+    let whisperExitCode = null
+    let fileStalled = false
     const INITIAL_SKIP_MS = 20000
     let skipMs = INITIAL_SKIP_MS
     for (let skip = 0; !stopRequested; skip++) {
@@ -696,7 +711,8 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
 
       const runLines = []
       let hallucinationAtMs = null
-      let whisperExitCode = null
+      let passStalled = false
+      whisperExitCode = null
 
       await new Promise(resolve => {
         // Vulkan build auto-detects GPU; only pass -ng to force CPU when no GPU build
@@ -708,12 +724,25 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         const proc = spawn(whisperCli, args)
         currentProc = proc
 
+        // Watchdog: whisper prints progress continuously, so a long gap with no
+        // output at all means it's wedged on this input. Kill it and flag a stall.
+        let lastActivity = Date.now()
+        const watchdog = setInterval(() => {
+          if (Date.now() - lastActivity > WHISPER_STALL_MS) {
+            passStalled = true
+            send('transcribe:log', `[whisper] no output for ${WHISPER_STALL_MS / 1000}s — engine appears stuck, terminating`)
+            clearInterval(watchdog)
+            forceKill(proc)
+          }
+        }, 10000)
+
         let rawOutput = ''
         const seen = new Set()
         const recentTexts = []
         let hallucinationDetected = false
 
         const processChunk = (text) => {
+          lastActivity = Date.now()
           rawOutput += text
           text.split('\n').filter(l => l.trim()).forEach(l => send('transcribe:log', `[whisper] ${l.trim()}`))
           const lineRegex = /\[(\d+:\d+(?::\d+)?\.\d+) --> (\d+:\d+(?::\d+)?\.\d+)\]\s+(.+)/g
@@ -740,7 +769,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
               recentTexts.slice(-4).every(t => t === recentTexts[recentTexts.length - 1])) {
               hallucinationDetected = true
               hallucinationAtMs = absStartMs
-              proc.kill()
+              forceKill(proc)
               return
             }
 
@@ -754,6 +783,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         proc.stdout.on('data', d => { process.stdout.write('[whisper stdout] ' + d.toString()); processChunk(d.toString()) })
         proc.stderr.on('data', d => { process.stdout.write('[whisper stderr] ' + d.toString()); processChunk(d.toString()) })
         proc.on('close', (code) => {
+          clearInterval(watchdog)
           currentProc = null
           whisperExitCode = code
           send('transcribe:log', `[whisper] exit code ${code} — ${runLines.length} lines captured`)
@@ -772,6 +802,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         try { fs.writeFileSync(finalTxt, allLines.map(l => l.text).join('\n'), 'utf8') } catch {}
       }
 
+      if (passStalled) { fileStalled = true; break }
       if (hallucinationAtMs === null || stopRequested) break
 
       // Adjust skip: if we hallucinated immediately (< 3 lines), the bad section is larger — double the skip
@@ -811,6 +842,34 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
       }
       send('transcribe:file', { file: filePath, status: 'stopped', entry })
       break
+    }
+
+    // Engine stalled (no output for too long): save whatever was captured and
+    // report it clearly instead of leaving the file stuck on "transcribing".
+    if (fileStalled) {
+      let entry
+      if (allLines.length > 0) {
+        entry = {
+          id: Date.now() + Math.random(),
+          name: path.basename(filePath),
+          filePath,
+          srtPath: fs.existsSync(finalSrt) ? finalSrt : null,
+          txtPath: fs.existsSync(finalTxt) ? finalTxt : null,
+          lines: allLines,
+          date: new Date().toISOString(),
+        }
+        const catalog = loadCatalog()
+        catalog.unshift(entry)
+        saveCatalog(catalog)
+        results.push(entry)
+      }
+      send('transcribe:file', {
+        file: filePath,
+        status: 'error',
+        error: `Engine stalled — no output for ${WHISPER_STALL_MS / 1000}s.${allLines.length ? ' Partial result saved.' : ' Try again or use a shorter clip.'}`,
+        entry,
+      })
+      continue
     }
 
     if (allLines.length === 0 && whisperExitCode !== 0) {
