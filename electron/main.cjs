@@ -431,6 +431,16 @@ let currentConfig = {}
 let currentProc = null
 let stopRequested = false
 
+// Force-kill whatever child process is running right now (ffmpeg conversion,
+// segment extraction, or whisper). SIGKILL because both ffmpeg and whisper
+// ignore SIGTERM while busy — so Stop must always terminate them immediately.
+function killCurrentProc() {
+  const proc = currentProc
+  currentProc = null
+  if (!proc) return
+  try { proc.kill('SIGKILL') } catch {}
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -571,10 +581,17 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         : []
       const ff = spawn(ffmpegExe, ['-i', filePath, ...silenceFilter,
         '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath, '-y'])
+      currentProc = ff
       ff.stderr.on('data', d => send('transcribe:log', `[ffmpeg] ${d.toString().trim()}`))
-      ff.on('close', code => { send('transcribe:log', `[ffmpeg] exit code ${code}`); resolve(code === 0) })
-      ff.on('error', err => { send('transcribe:log', `[ffmpeg] error: ${err.message}`); resolve(false) })
+      ff.on('close', code => { currentProc = null; send('transcribe:log', `[ffmpeg] exit code ${code}`); resolve(code === 0) })
+      ff.on('error', err => { currentProc = null; send('transcribe:log', `[ffmpeg] error: ${err.message}`); resolve(false) })
     })
+    // Stop pressed during conversion: ffmpeg was killed, drop the partial wav and bail.
+    if (stopRequested) {
+      if (fs.existsSync(wavPath)) try { fs.unlinkSync(wavPath) } catch {}
+      send('transcribe:file', { file: filePath, status: 'stopped' })
+      break
+    }
     if (!convertOk) {
       send('transcribe:file', { file: filePath, status: 'error', error: 'ffmpeg conversion failed' })
       continue
@@ -597,9 +614,16 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
             '-ss', (offsetMs / 1000).toString(), '-i', wavPath,
             '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', tempSeg, '-y'
           ])
-          ff.on('close', () => resolve())
+          currentProc = ff
+          ff.on('close', () => { currentProc = null; resolve() })
+          ff.on('error', () => { currentProc = null; resolve() })
         })
         segWav = tempSeg
+        // Stop pressed during segment extraction: abandon this pass.
+        if (stopRequested) {
+          if (tempSeg && fs.existsSync(tempSeg)) try { fs.unlinkSync(tempSeg) } catch {}
+          break
+        }
       }
 
       const runLines = []
@@ -611,7 +635,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         const gpuArgs = config.whisperHasGpu ? [] : ['-ng']
         const args = ['-m', model, '-l', 'pt', '-f', segWav,
           '--no-speech-thold', '0.3', '--entropy-thold', '2.8',
-          '--no-fallback', '--print-progress', '-nfa', ...gpuArgs]
+          '--no-fallback', '--print-progress', ...gpuArgs]
         send('transcribe:log', `[whisper] spawn (pass ${skip + 1}): whisper-cli ${args.join(' ')}`)
         const proc = spawn(whisperCli, args)
         currentProc = proc
@@ -698,6 +722,29 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
 
     if (fs.existsSync(wavPath)) try { fs.unlinkSync(wavPath) } catch {}
 
+    // Stop pressed mid-transcription: keep whatever lines were captured (already
+    // written to SRT/TXT each pass), register them, mark the file stopped, exit.
+    if (stopRequested) {
+      let entry
+      if (allLines.length > 0) {
+        entry = {
+          id: Date.now() + Math.random(),
+          name: path.basename(filePath),
+          filePath,
+          srtPath: fs.existsSync(finalSrt) ? finalSrt : null,
+          txtPath: fs.existsSync(finalTxt) ? finalTxt : null,
+          lines: allLines,
+          date: new Date().toISOString(),
+        }
+        const catalog = loadCatalog()
+        catalog.unshift(entry)
+        saveCatalog(catalog)
+        results.push(entry)
+      }
+      send('transcribe:file', { file: filePath, status: 'stopped', entry })
+      break
+    }
+
     if (allLines.length === 0 && whisperExitCode !== 0) {
       send('transcribe:file', { file: filePath, status: 'error', error: `Whisper crashed (code ${whisperExitCode}) — check the terminal for details` })
       continue
@@ -727,10 +774,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
 
 ipcMain.handle('transcribe:stop', () => {
   stopRequested = true
-  if (currentProc) {
-    currentProc.kill()
-    currentProc = null
-  }
+  killCurrentProc()
 })
 
 

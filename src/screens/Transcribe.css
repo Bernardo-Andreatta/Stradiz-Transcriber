@@ -47,6 +47,8 @@
 .file-item.done { border-color: var(--green); }
 .file-item.error { border-color: var(--red); }
 .file-item.error .file-status { color: var(--red); }
+.file-item.stopped { border-color: var(--text-dim); }
+.file-item.stopped .file-status { color: var(--text-dim); }
 
 .file-name { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-status { font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; }

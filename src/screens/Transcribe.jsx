@@ -96,6 +96,7 @@ export default function Transcribe({ config, onDone }) {
                   {state.status === 'converting' && <><Loader2 size={11} className="spin" /> Preparing audio…</>}
                   {state.status === 'transcribing' && <><Waveform active bars={4} /> Transcribing…</>}
                   {state.status === 'done' && <><CheckCircle2 size={11} /> Done</>}
+                  {state.status === 'stopped' && <><Square size={11} /> Stopped{state.entry ? ' — partial saved' : ''}</>}
                   {state.status === 'error' && <><XCircle size={11} /> {state.error || 'Something went wrong'}</>}
                   {!state.status && <><Clock size={11} /> Queued</>}
                 </span>
