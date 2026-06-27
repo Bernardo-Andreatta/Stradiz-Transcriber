@@ -38,6 +38,7 @@
     "appId": "com.stradiz.transcriber",
     "productName": "Stradiz Transcriber",
     "asar": true,
+    "afterPack": "build/afterPack.cjs",
     "files": [
       "dist/**",
       "electron/**",
