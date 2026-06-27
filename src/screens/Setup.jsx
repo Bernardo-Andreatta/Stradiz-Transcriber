@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Cpu, CheckCircle2, Zap, Sparkles } from 'lucide-react'
+import { Cpu, CheckCircle2, Zap, Sparkles, Trash2 } from 'lucide-react'
 import LogConsole from '../components/LogConsole.jsx'
 import Waveform from '../components/Waveform.jsx'
 import './Setup.css'
@@ -61,6 +61,16 @@ export default function Setup({ onReady }) {
     await window.api.setup.start()
   }
 
+  const removeData = async () => {
+    const res = await window.api.setup.removeData()
+    if (res?.ok) {
+      setDone(false)
+      setProgress({})
+      setLogs([])
+      setStatus('Downloaded data removed (~1.6 GB freed). Set up again whenever you want to transcribe.')
+    }
+  }
+
   return (
     <div className="setup">
       <div className="setup-card">
@@ -110,6 +120,12 @@ export default function Setup({ onReady }) {
 
         {done && (
           <div className="done-msg"><CheckCircle2 size={15} /> All set! Switching to Transcribe...</div>
+        )}
+
+        {done && !downloading && (
+          <button className="remove-data-btn" onClick={removeData} title="Free up space by deleting the downloaded engine, ffmpeg, and model">
+            <Trash2 size={13} /> Remove downloaded data (~1.6 GB)
+          </button>
         )}
       </div>
     </div>

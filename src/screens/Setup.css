@@ -49,6 +49,21 @@
 .start-btn { width: 100%; padding: 12px; font-size: 15px; margin-top: 8px; }
 .done-msg { color: var(--green); font-size: 14px; text-align: center; display: flex; align-items: center; justify-content: center; gap: 6px; }
 
+.remove-data-btn {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  transition: border-color 0.15s, color 0.15s;
+}
+.remove-data-btn:hover { border-color: var(--red); color: var(--red); opacity: 1; }
+
 /* Constrain the shared LogConsole to a sensible height inside the setup card */
 .setup-log-wrap { display: flex; max-height: 180px; }
 .setup-log-wrap .logc { flex: 1; }

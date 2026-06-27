@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('api', {
     onProgress: (cb) => ipcRenderer.on('setup:progress', (_, d) => cb(d)),
     onGpu: (cb) => ipcRenderer.on('setup:gpu', (_, d) => cb(d)),
     onDone: (cb) => ipcRenderer.on('setup:done', (_, d) => cb(d)),
+    removeData: () => ipcRenderer.invoke('setup:removeData'),
   },
   dialog: {
     openFiles: () => ipcRenderer.invoke('dialog:openFiles'),

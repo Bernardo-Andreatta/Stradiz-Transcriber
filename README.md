@@ -51,6 +51,8 @@ Open the `.dmg` and drag **Stradiz Transcriber** into the **Applications** folde
 
 > Files are stored in `~/.whisper-app`.
 
+> **Uninstalling on macOS:** Dragging the app to the Trash leaves the ~1.6 GB of downloaded engine/model data behind (macOS apps have no uninstaller). To remove it: in the app, go to **Setup → Remove downloaded data**, or delete the folder manually with `rm -rf ~/.whisper-app`, then trash the app.
+
 ## Usage
 
 1. Go to **Transcribe**, click the drop zone to select any audio or video file (mp3, mp4, m4a, wav, mkv…)

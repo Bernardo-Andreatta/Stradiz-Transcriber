@@ -481,6 +481,27 @@ ipcMain.handle('setup:start', async () => {
   await setupWhisper(mainWindow)
 })
 
+// macOS DMG apps can't run an uninstall script, so this is the in-app way to
+// reclaim the ~1.6 GB of downloaded data (also works on Windows). Removes the
+// engine, ffmpeg, and model but keeps catalog.json so the user's transcription
+// library survives — their .srt/.txt files live next to the source media anyway.
+ipcMain.handle('setup:removeData', async () => {
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Cancel', 'Remove'],
+    defaultId: 1,
+    cancelId: 0,
+    title: 'Remove downloaded data',
+    message: 'Remove downloaded data?',
+    detail: 'Deletes the Whisper engine, FFmpeg, and the model (~1.6 GB) from ~/.whisper-app. Your transcription catalog is kept, and you can re-download anytime from Setup.',
+  })
+  if (response !== 1) return { ok: false, canceled: true }
+  for (const target of [WHISPER_DIR, FFMPEG_DIR, MODELS_DIR, WHISPER_GPU_FLAG]) {
+    try { if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true }) } catch {}
+  }
+  return { ok: true }
+})
+
 ipcMain.handle('setup:check', async () => {
   const whisperCli = getWhisperCli()
   const ffmpeg = getFFmpeg()
