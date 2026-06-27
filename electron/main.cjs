@@ -11,6 +11,33 @@ const http = require('http')
 const { spawn, execSync } = require('child_process')
 const os = require('os')
 
+// ---- Platform abstraction -------------------------------------------------
+// The app downloads prebuilt whisper-cli + ffmpeg binaries on first run. Their
+// names, download URLs, GPU backend, and how the archive is extracted all differ
+// per OS, so every part of the code that touches the binary layer goes through
+// the constants and helpers below instead of hard-coding Windows paths.
+const PLATFORM = process.platform               // 'win32' | 'darwin'
+const ARCH = process.arch                        // 'x64' | 'arm64'
+const IS_WIN = PLATFORM === 'win32'
+const IS_MAC = PLATFORM === 'darwin'
+const EXE = IS_WIN ? '.exe' : ''                 // executable suffix
+
+const RELEASE_BASE = 'https://github.com/Bernardo-Andreatta/Stradiz-Transcriber/releases/download/v1.0.0'
+
+// Whisper engine build per platform. Windows ships a Vulkan GPU build; macOS a
+// universal Metal build (one binary for Apple Silicon + Intel, every Mac has a
+// usable GPU). Both are self-hosted on our release.
+const WHISPER_BUILD = IS_MAC
+  ? { url: `${RELEASE_BASE}/whisper-metal-bin-universal.zip`, name: 'whisper-metal-bin-universal.zip', hasGpu: true }
+  : { url: `${RELEASE_BASE}/whisper-vulkan-bin-x64.zip`,      name: 'whisper-vulkan-bin-x64.zip',      hasGpu: true }
+
+// ffmpeg static build per platform. Windows pulls the well-known BtbN nightly;
+// macOS pulls the martin-riedl.de static builds (a single self-contained binary,
+// arm64 or amd64). Both are third-party static builds, same as before.
+const FFMPEG_BUILD = IS_MAC
+  ? { url: `https://ffmpeg.martin-riedl.de/redirect/latest/macos/${ARCH === 'arm64' ? 'arm64' : 'amd64'}/release/ffmpeg.zip`, name: `ffmpeg-mac-${ARCH}.zip` }
+  : { url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip', name: 'ffmpeg-win64-gpl.zip' }
+
 const isDev = !app.isPackaged
 const APP_DATA = path.join(os.homedir(), '.whisper-app')
 const WHISPER_DIR = path.join(APP_DATA, 'whisper.cpp')
@@ -46,7 +73,13 @@ function findExeInDir(dir, name) {
 const WHISPER_GPU_FLAG = path.join(APP_DATA, 'whisper_gpu.txt')
 
 function getWhisperCli() {
-  return findExeInDir(WHISPER_DIR, 'whisper-cli.exe') || path.join(WHISPER_DIR, 'whisper-cli.exe')
+  return findExeInDir(WHISPER_DIR, 'whisper-cli' + EXE) || path.join(WHISPER_DIR, 'whisper-cli' + EXE)
+}
+
+// chmod downloaded binaries +x on Unix — zip archives don't always preserve the
+// executable bit, and macOS won't spawn a file that isn't marked executable.
+function ensureExecutable(p) {
+  if (!IS_WIN && p) { try { fs.chmodSync(p, 0o755) } catch {} }
 }
 
 function getWhisperHasGpu() {
@@ -54,9 +87,14 @@ function getWhisperHasGpu() {
 }
 
 function getFFmpeg() {
-  const appFfmpeg = path.join(FFMPEG_DIR, 'bin', 'ffmpeg.exe')
-  if (fs.existsSync(appFfmpeg)) return appFfmpeg
-  return null
+  // Windows static build nests the binary under bin/; the macOS build ships it
+  // at the archive root. Check the Windows path first, then fall back to a
+  // recursive search that covers both layouts.
+  if (IS_WIN) {
+    const winFfmpeg = path.join(FFMPEG_DIR, 'bin', 'ffmpeg.exe')
+    if (fs.existsSync(winFfmpeg)) return winFfmpeg
+  }
+  return findExeInDir(FFMPEG_DIR, 'ffmpeg' + EXE)
 }
 
 function getModel() {
@@ -68,12 +106,28 @@ function getVadModel() {
 }
 
 function detectGPU() {
+  // Every Mac runs the Metal backend, so report the GPU type without probing.
+  if (IS_MAC) return 'apple'
   try {
     const out = execSync('powershell -Command "Get-WmiObject Win32_VideoController | Select-Object -ExpandProperty Name"', { timeout: 8000 }).toString()
     if (/nvidia/i.test(out)) return 'nvidia'
     if (/amd|radeon/i.test(out)) return 'amd'
   } catch {}
   return 'cpu'
+}
+
+// HEAD a URL to confirm an asset is reachable before committing to a download.
+function headOk(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: 'HEAD', headers: { 'User-Agent': 'whisper-app/1.0' } }, res => {
+      res.resume()
+      if ([200, 301, 302, 307, 308].includes(res.statusCode)) resolve()
+      else reject(new Error(`HTTP ${res.statusCode}`))
+    })
+    req.on('error', reject)
+    req.setTimeout(15000, () => req.destroy(new Error('HEAD request timed out')))
+    req.end()
+  })
 }
 
 function fetchJson(url) {
@@ -159,8 +213,9 @@ function downloadFile(url, dest, onProgress) {
   })
 }
 
-// Extract a .zip on Windows. Tries bsdtar (fast, built into Win10+), then falls
-// back to PowerShell Expand-Archive. Throws a descriptive error if both fail.
+// Extract a .zip. Uses bsdtar (built into Win10+ and macOS), then falls back to
+// PowerShell Expand-Archive on Windows. On macOS it also clears the quarantine
+// flag so Gatekeeper doesn't block the freshly downloaded binaries from running.
 function extractZip(zipPath, destDir) {
   // Sanity check: a real zip starts with "PK". Catches truncated/HTML downloads
   // with a clear message instead of a cryptic extractor error.
@@ -177,22 +232,33 @@ function extractZip(zipPath, destDir) {
     // openSync/readSync failure — fall through and let the extractor try
   }
 
+  // macOS: drop the quarantine attribute on the extracted tree so spawning the
+  // unsigned binaries doesn't trigger a Gatekeeper "cannot be opened" block.
+  const clearQuarantine = () => {
+    if (IS_MAC) { try { execSync(`xattr -dr com.apple.quarantine "${destDir}"`) } catch {} }
+  }
+
   const escPs = (p) => p.replace(/'/g, "''")
   try {
     execSync(`tar -xf "${zipPath}" -C "${destDir}"`, { stdio: ['ignore', 'ignore', 'pipe'] })
+    clearQuarantine()
     return
   } catch (tarErr) {
-    try {
-      execSync(
-        `powershell.exe -NoProfile -NonInteractive -Command "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath '${escPs(zipPath)}' -DestinationPath '${escPs(destDir)}' -Force"`,
-        { stdio: ['ignore', 'ignore', 'pipe'], timeout: 600000 }
-      )
-      return
-    } catch (psErr) {
-      const tarMsg = (tarErr.stderr || tarErr.message || '').toString().split('\n')[0].trim()
-      const psMsg = (psErr.stderr || psErr.message || '').toString().split('\n')[0].trim()
-      throw new Error(`extraction failed — tar: ${tarMsg || 'failed'}; Expand-Archive: ${psMsg || 'failed'}`)
+    if (IS_WIN) {
+      try {
+        execSync(
+          `powershell.exe -NoProfile -NonInteractive -Command "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath '${escPs(zipPath)}' -DestinationPath '${escPs(destDir)}' -Force"`,
+          { stdio: ['ignore', 'ignore', 'pipe'], timeout: 600000 }
+        )
+        return
+      } catch (psErr) {
+        const tarMsg = (tarErr.stderr || tarErr.message || '').toString().split('\n')[0].trim()
+        const psMsg = (psErr.stderr || psErr.message || '').toString().split('\n')[0].trim()
+        throw new Error(`extraction failed — tar: ${tarMsg || 'failed'}; Expand-Archive: ${psMsg || 'failed'}`)
+      }
     }
+    const tarMsg = (tarErr.stderr || tarErr.message || '').toString().split('\n')[0].trim()
+    throw new Error(`extraction failed — tar: ${tarMsg || 'failed'}`)
   }
 }
 
@@ -239,28 +305,17 @@ async function setupWhisper(win) {
   // Download whisper-cli if needed
   if (needsWhisper) {
     // Resolve which build to download once (URL resolution isn't retried, the
-    // download/extract is). Prefer our Vulkan build; fall back to plain CPU build.
-    let downloadUrl = null
-    let assetName = null
-    let hasGpu = false
+    // download/extract is). Prefer our platform build; on Windows fall back to
+    // the upstream CPU build if our release asset is unreachable.
+    let downloadUrl = WHISPER_BUILD.url
+    let assetName = WHISPER_BUILD.name
+    let hasGpu = WHISPER_BUILD.hasGpu
 
-    send('setup:status', 'Checking Whisper Vulkan build availability...')
-    try {
-      const vulkanUrl = 'https://github.com/Bernardo-Andreatta/Stradiz-Transcriber/releases/download/v1.0.0/whisper-vulkan-bin-x64.zip'
-      await new Promise((resolve, reject) => {
-        const req = https.request(vulkanUrl, { method: 'HEAD', headers: { 'User-Agent': 'whisper-app/1.0' } }, res => {
-          res.resume()
-          if ([200, 301, 302, 307, 308].includes(res.statusCode)) resolve()
-          else reject(new Error(`HTTP ${res.statusCode}`))
-        })
-        req.on('error', reject)
-        req.setTimeout(15000, () => req.destroy(new Error('HEAD request timed out')))
-        req.end()
-      })
-      downloadUrl = vulkanUrl
-      assetName = 'whisper-vulkan-bin-x64.zip'
-      hasGpu = true
-    } catch {
+    send('setup:status', `Checking Whisper ${IS_MAC ? 'Metal' : 'Vulkan'} build availability...`)
+    let available = false
+    try { await headOk(downloadUrl); available = true } catch {}
+
+    if (!available && IS_WIN) {
       try {
         send('setup:status', 'Fetching latest Whisper release info...')
         const release = await fetchJson('https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest')
@@ -268,12 +323,12 @@ async function setupWhisper(win) {
         const asset =
           assets.find(a => a.name === 'whisper-bin-x64.zip') ||
           assets.find(a => /x64/i.test(a.name) && a.name.endsWith('.zip') && !/cuda|cublas|blas/i.test(a.name))
-        if (asset) { downloadUrl = asset.browser_download_url; assetName = asset.name }
+        if (asset) { downloadUrl = asset.browser_download_url; assetName = asset.name; hasGpu = false; available = true }
       } catch {}
     }
 
-    if (!downloadUrl) {
-      send('setup:status', 'Could not reach the download server for Whisper. Check your connection and retry setup.')
+    if (!available) {
+      send('setup:status', `Could not reach the download server for the Whisper ${IS_MAC ? 'macOS' : 'Windows'} build. Check your connection and retry setup.`)
     } else {
       const zipPath = path.join(APP_DATA, 'whisper.zip')
       await withRetry('Whisper', send, async (attempt) => {
@@ -289,9 +344,11 @@ async function setupWhisper(win) {
         send('setup:status', 'Extracting Whisper...')
         extractZip(zipPath, WHISPER_DIR)
         try { fs.unlinkSync(zipPath) } catch {}
-        if (!findExeInDir(WHISPER_DIR, 'whisper-cli.exe')) {
-          throw new Error('whisper-cli.exe not found after extraction')
+        const cliPath = findExeInDir(WHISPER_DIR, 'whisper-cli' + EXE)
+        if (!cliPath) {
+          throw new Error(`whisper-cli${EXE} not found after extraction`)
         }
+        ensureExecutable(cliPath)
         fs.writeFileSync(WHISPER_GPU_FLAG, hasGpu ? '1' : '0')
       })
     }
@@ -308,21 +365,27 @@ async function setupWhisper(win) {
       fs.mkdirSync(FFMPEG_DIR, { recursive: true })
 
       await downloadFile(
-        'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+        FFMPEG_BUILD.url,
         ffmpegZip,
         (pct, rcv, total) => send('setup:progress', { task: 'ffmpeg', pct, rcv, total })
       )
       send('setup:status', 'Extracting ffmpeg...')
       extractZip(ffmpegZip, FFMPEG_DIR)
-      // Flatten the inner versioned folder so bin/ffmpeg.exe is directly under FFMPEG_DIR
-      const inner = fs.readdirSync(FFMPEG_DIR).find(f => f.startsWith('ffmpeg'))
+      // The Windows build nests everything in a versioned folder (ffmpeg-N.N-...);
+      // flatten it so bin/ffmpeg.exe sits directly under FFMPEG_DIR. The macOS
+      // build ships the binary at the root, so only flatten real subfolders.
+      const inner = fs.readdirSync(FFMPEG_DIR).find(f =>
+        f.startsWith('ffmpeg') && fs.statSync(path.join(FFMPEG_DIR, f)).isDirectory()
+      )
       if (inner) {
         const innerPath = path.join(FFMPEG_DIR, inner)
         fs.cpSync(innerPath, FFMPEG_DIR, { recursive: true })
         fs.rmSync(innerPath, { recursive: true, force: true })
       }
       try { fs.unlinkSync(ffmpegZip) } catch {}
-      if (!getFFmpeg()) throw new Error('ffmpeg.exe not found after extraction')
+      const ffmpegPath = getFFmpeg()
+      if (!ffmpegPath) throw new Error(`ffmpeg${EXE} not found after extraction`)
+      ensureExecutable(ffmpegPath)
     })
   }
 

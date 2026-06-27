@@ -5,11 +5,12 @@ A local, privacy-first audio transcription desktop app built on [whisper.cpp](ht
 ![Electron](https://img.shields.io/badge/Electron-42-47848F?logo=electron)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
 ![Windows](https://img.shields.io/badge/Windows-x64-0078D4?logo=windows)
+![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2B%20Intel-000000?logo=apple)
 
 ## Features
 
 - **Local transcription** — powered by whisper.cpp with the `ggml-large-v3-turbo` model
-- **GPU acceleration** — auto-detects NVIDIA / AMD via Vulkan; falls back to CPU
+- **GPU acceleration** — Windows: auto-detects NVIDIA / AMD via Vulkan (CPU fallback). macOS: Metal on every Mac (Apple Silicon + Intel)
 - **Silence removal** — optional FFmpeg preprocessing to skip dead air before transcription
 - **Hallucination recovery** — detects and auto-skips repeated-line hallucinations, resumes from the next segment until the file ends or you cancel
 - **Subtitle catalog** — browse, play, and edit all transcribed files in one place
@@ -20,11 +21,23 @@ A local, privacy-first audio transcription desktop app built on [whisper.cpp](ht
 
 ## Installation
 
-Download the latest installer from the [Releases](../../releases) page and run it. No dependencies to install manually — the app handles everything on first launch (~1.6 GB download: Vulkan-accelerated whisper.cpp binary + FFmpeg + large-v3-turbo model).
+Download the latest build for your OS from the [Releases](../../releases) page. No dependencies to install manually — the app downloads the right whisper.cpp engine, FFmpeg, and the model on first launch (~1.6 GB), then runs fully offline.
 
-> **Windows SmartScreen warning:** Because the installer isn't code-signed yet, Windows may show "Windows protected your PC". Click **More info → Run anyway** to proceed — the app is safe.
+### Windows
 
-> Files are stored in `%USERPROFILE%\.whisper-app` and are preserved across uninstalls. The uninstaller will offer to delete them if you want a clean removal.
+Download and run `Stradiz Transcriber Setup.exe`. First launch pulls the Vulkan-accelerated whisper.cpp build + FFmpeg + model.
+
+> **SmartScreen warning:** Because the installer isn't code-signed yet, Windows may show "Windows protected your PC". Click **More info → Run anyway** to proceed — the app is safe.
+
+> Files are stored in `%USERPROFILE%\.whisper-app` and preserved across uninstalls. The uninstaller offers to delete them for a clean removal.
+
+### macOS (Apple Silicon + Intel)
+
+Download the `.dmg` (`Stradiz Transcriber-arm64.dmg` for Apple Silicon, `-x64.dmg` for Intel), open it, and drag the app to Applications. First launch pulls a universal Metal whisper.cpp build + FFmpeg + model.
+
+> **Gatekeeper warning:** The app isn't notarized yet, so macOS will say it "can't be opened because Apple cannot check it for malware." Right-click the app → **Open** → **Open** (only needed once). Alternatively: `xattr -dr com.apple.quarantine "/Applications/Stradiz Transcriber.app"`.
+
+> Files are stored in `~/.whisper-app`.
 
 ## Usage
 
@@ -37,7 +50,7 @@ Download the latest installer from the [Releases](../../releases) page and run i
 
 ## Development
 
-**Prerequisites:** Node.js 20+, Git, Windows (the whisper.cpp binaries and installer target are Windows-only)
+**Prerequisites:** Node.js 20+, Git. Builds on Windows and macOS.
 
 ```bash
 git clone https://github.com/Bernardo-Andreatta/Stradiz-Transcriber.git
@@ -46,12 +59,22 @@ npm install
 npm run start        # launches Vite dev server + Electron
 ```
 
-On first run in dev mode the Setup screen will download whisper.cpp, FFmpeg, and the model to `~/.whisper-app` (same as production). Subsequent runs skip this.
+On first run in dev mode the Setup screen downloads the whisper.cpp engine, FFmpeg, and the model to `~/.whisper-app` (same as production). Subsequent runs skip this.
 
 **Build the installer:**
 
 ```bash
 npm run dist:win     # outputs release/Stradiz Transcriber Setup.exe
+npm run dist:mac     # outputs release/Stradiz Transcriber-{arm64,x64}.dmg
+```
+
+**Refresh the macOS whisper engine asset** (maintainers only — produces the universal binary the installer downloads; run once per whisper.cpp version bump, then upload to the release):
+
+```bash
+brew install cmake
+./scripts/build-mac-whisper.sh           # → release/binaries/whisper-metal-bin-universal.zip
+gh release upload v1.0.0 "release/binaries/whisper-metal-bin-universal.zip" \
+  --repo Bernardo-Andreatta/Stradiz-Transcriber
 ```
 
 ## Tech stack
@@ -63,7 +86,7 @@ npm run dist:win     # outputs release/Stradiz Transcriber Setup.exe
 | Icons | Lucide React |
 | Transcription | whisper.cpp (ggml-large-v3-turbo) |
 | Audio processing | FFmpeg |
-| Packaging | electron-builder (NSIS) |
+| Packaging | electron-builder (NSIS on Windows, DMG on macOS) |
 
 ## Open-source components
 

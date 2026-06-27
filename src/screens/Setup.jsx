@@ -1,6 +1,16 @@
-import { useState, useEffect, useRef } from 'react'
-import { Mic, Cpu, CheckCircle2, Zap } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Cpu, CheckCircle2, Zap, Sparkles } from 'lucide-react'
+import LogConsole from '../components/LogConsole.jsx'
+import Waveform from '../components/Waveform.jsx'
 import './Setup.css'
+
+// Friendly label + accent for whichever GPU backend the engine will use.
+const GPU_BADGES = {
+  amd:    { label: 'AMD GPU (Vulkan)',    icon: Zap },
+  nvidia: { label: 'NVIDIA GPU (Vulkan)', icon: Zap },
+  apple:  { label: 'Apple GPU (Metal)',   icon: Sparkles },
+  cpu:    { label: 'CPU only',            icon: Cpu },
+}
 
 function fmt(bytes) {
   if (!bytes) return ''
@@ -16,12 +26,8 @@ export default function Setup({ onReady }) {
   const [progress, setProgress] = useState({})
   const [downloading, setDownloading] = useState(false)
   const [done, setDone] = useState(false)
-  const logRef = useRef(null)
 
-  const addLog = (msg) => {
-    setLogs(prev => [...prev, msg])
-    setTimeout(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, 30)
-  }
+  const addLog = (msg) => setLogs(prev => [...prev, msg])
 
   useEffect(() => {
     window.api.setup.onStatus(msg => { setStatus(msg); addLog(msg) })
@@ -58,19 +64,22 @@ export default function Setup({ onReady }) {
   return (
     <div className="setup">
       <div className="setup-card">
-        <h1><Mic size={28} /> Stradiz Transcriber</h1>
-        <p className="subtitle">GPU-accelerated transcription on your machine</p>
+        <div className="setup-hero">
+          <Waveform active={downloading} bars={7} className="setup-hero-wave" />
+          <h1>Stradiz Transcriber</h1>
+          <p className="subtitle">Private, GPU-accelerated transcription that runs entirely on your machine — nothing is uploaded.</p>
+        </div>
 
         <div className="status-row">
           <span className="status-dot" style={{ background: done ? 'var(--green)' : downloading ? 'var(--yellow)' : 'var(--text-dim)' }} />
           <span>{status}</span>
         </div>
 
-        {gpu && (
+        {gpu && GPU_BADGES[gpu] && (
           <div className="gpu-row">
-            {gpu === 'amd' && <span className="badge amd"><Zap size={12} /> AMD GPU (Vulkan)</span>}
-            {gpu === 'nvidia' && <span className="badge nvidia"><Zap size={12} /> NVIDIA GPU (Vulkan)</span>}
-            {gpu === 'cpu' && <span className="badge cpu"><Cpu size={12} /> CPU only</span>}
+            <span className={`badge ${gpu}`}>
+              {(() => { const Icon = GPU_BADGES[gpu].icon; return <Icon size={12} /> })()} {GPU_BADGES[gpu].label}
+            </span>
           </div>
         )}
 
@@ -88,8 +97,8 @@ export default function Setup({ onReady }) {
         ))}
 
         {logs.length > 0 && (
-          <div className="setup-log" ref={logRef}>
-            {logs.map((l, i) => <div key={i} className="setup-log-line">{l}</div>)}
+          <div className="setup-log-wrap">
+            <LogConsole logs={logs} title="Setup activity" emptyHint="Setup steps will appear here." />
           </div>
         )}
 

@@ -3,6 +3,7 @@ import { Mic, Cpu, Info, X } from 'lucide-react'
 import Setup from './screens/Setup.jsx'
 import Transcribe from './screens/Transcribe.jsx'
 import Catalog from './screens/Catalog.jsx'
+import Waveform from './components/Waveform.jsx'
 import './App.css'
 
 function AboutModal({ onClose }) {
@@ -56,7 +57,7 @@ export default function App() {
   return (
     <div className="app">
       <nav className="nav">
-        <span className="nav-logo"><Mic size={15} /> Stradiz Transcriber</span>
+        <span className="nav-logo"><Waveform className="nav-wave" /> Stradiz Transcriber</span>
         <div className="nav-links">
           <button className={screen === 'transcribe' ? 'active' : ''} onClick={() => setScreen('transcribe')} disabled={!config}>Transcribe</button>
           <button className={screen === 'catalog' ? 'active' : ''} onClick={() => setScreen('catalog')} disabled={!config}>Catalog</button>
@@ -66,7 +67,7 @@ export default function App() {
           {config && (
             <span className="gpu-badge">
               <Cpu size={12} />
-              {config.gpu === 'amd' ? ' AMD GPU' : config.gpu === 'nvidia' ? ' NVIDIA GPU' : ' CPU'}
+              {config.gpu === 'amd' ? ' AMD GPU' : config.gpu === 'nvidia' ? ' NVIDIA GPU' : config.gpu === 'apple' ? ' Apple GPU' : ' CPU'}
               <span className="gpu-dot" data-gpu={config.gpu} />
             </span>
           )}

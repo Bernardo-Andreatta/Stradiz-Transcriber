@@ -9,13 +9,26 @@
   --text-dim: #6b6e85;
   --accent: #7c6af7;
   --accent2: #a78bfa;
+  --accent-soft: rgba(124, 106, 247, 0.14);
   --green: #34d399;
   --red: #f87171;
   --yellow: #fbbf24;
-  font-family: 'Segoe UI', system-ui, sans-serif;
+
+  /* Deliberate pairing: a humanist UI sans against a crisp mono used for every
+     piece of machine data — timecodes, sizes, log output. The mono is a real
+     voice in the design, not a fallback. */
+  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --radius: 8px;
+  --radius-lg: 14px;
+
+  font-family: var(--font-ui);
   font-size: 14px;
   color: var(--text);
   background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 body { margin: 0; overflow: hidden; }
@@ -33,7 +46,11 @@ button {
 button:hover { opacity: 0.85; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.btn-primary { background: var(--accent); color: #fff; font-weight: 600; }
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #fff;
+  font-weight: 600;
+}
 .btn-ghost { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
 .btn-danger { background: var(--red); color: #fff; }
 
@@ -45,7 +62,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .progress-bar-fill {
   height: 100%;
-  background: var(--accent);
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
   transition: width 0.3s ease;
   border-radius: 2px;
 }

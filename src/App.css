@@ -11,7 +11,8 @@
   flex-shrink: 0;
 }
 
-.nav-logo { font-weight: 700; font-size: 15px; color: #fff; margin-right: 12px; display: flex; align-items: center; gap: 7px; }
+.nav-logo { font-weight: 700; font-size: 15px; color: #fff; margin-right: 12px; display: flex; align-items: center; gap: 9px; letter-spacing: -0.01em; }
+.nav-wave { font-size: 17px; height: 17px; color: var(--accent2); }
 
 .nav-links { display: flex; gap: 4px; flex: 1; }
 .nav-links button {
@@ -46,6 +47,7 @@
 }
 .gpu-dot[data-gpu="nvidia"] { background: #34d399; }
 .gpu-dot[data-gpu="amd"] { background: #f87171; }
+.gpu-dot[data-gpu="apple"] { background: var(--accent2); }
 .gpu-dot[data-gpu="cpu"] { background: var(--text-dim); }
 
 .about-btn {

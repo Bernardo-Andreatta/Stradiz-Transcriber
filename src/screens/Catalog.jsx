@@ -244,7 +244,7 @@ export default function Catalog() {
           <span>Transcribed Files</span>
           <button className="catalog-import-btn" onClick={importFile} title="Import audio + SRT"><Plus size={11} /> Import</button>
         </div>
-        {items.length === 0 && <div className="catalog-empty">No transcriptions yet</div>}
+        {items.length === 0 && <div className="catalog-empty">Your transcriptions will appear here. Transcribe a file, or import one you already have.</div>}
         {items.map(item => (
           <div
             key={item.id}
@@ -271,7 +271,7 @@ export default function Catalog() {
       </div>
 
       <div className="catalog-player">
-        {!selected && <div className="player-empty">Select a file to play</div>}
+        {!selected && <div className="player-empty">Pick a transcription to play and edit its lines.</div>}
         {selected && (
           <>
             <div className="player-top">
@@ -343,7 +343,7 @@ export default function Catalog() {
             <div className="subtitle-panel" ref={subtitleRef}>
               {subtitles.length === 0 && (
                 <div className="no-subs">
-                  No subtitles available
+                  This file has no subtitle lines yet.
                   <button className="sub-insert-trigger" onClick={e => startInsert(-1, e)}><Plus size={12} /> Add line</button>
                 </div>
               )}
