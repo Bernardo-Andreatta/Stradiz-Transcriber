@@ -16,26 +16,31 @@ const os = require('os')
 // names, download URLs, GPU backend, and how the archive is extracted all differ
 // per OS, so every part of the code that touches the binary layer goes through
 // the constants and helpers below instead of hard-coding Windows paths.
-const PLATFORM = process.platform               // 'win32' | 'darwin'
+const PLATFORM = process.platform               // 'win32' | 'darwin' | 'linux'
 const ARCH = process.arch                        // 'x64' | 'arm64'
 const IS_WIN = PLATFORM === 'win32'
 const IS_MAC = PLATFORM === 'darwin'
+const IS_LINUX = PLATFORM === 'linux'
 const EXE = IS_WIN ? '.exe' : ''                 // executable suffix
 
 const RELEASE_BASE = 'https://github.com/Bernardo-Andreatta/Stradiz-Transcriber/releases/download/v1.0.0'
 
 // Whisper engine build per platform. Windows ships a Vulkan GPU build; macOS a
-// universal Metal build (one binary for Apple Silicon + Intel, every Mac has a
-// usable GPU). Both are self-hosted on our release.
+// universal Metal build (Apple Silicon + Intel); Linux a CPU build (broadest
+// compatibility — no GPU driver assumptions). All self-hosted on our release.
 const WHISPER_BUILD = IS_MAC
   ? { url: `${RELEASE_BASE}/whisper-metal-bin-universal.zip`, name: 'whisper-metal-bin-universal.zip', hasGpu: true }
+  : IS_LINUX
+  ? { url: `${RELEASE_BASE}/whisper-linux-bin-x64.zip`,       name: 'whisper-linux-bin-x64.zip',       hasGpu: false }
   : { url: `${RELEASE_BASE}/whisper-vulkan-bin-x64.zip`,      name: 'whisper-vulkan-bin-x64.zip',      hasGpu: true }
 
 // ffmpeg static build per platform. Windows pulls the well-known BtbN nightly;
-// macOS pulls the martin-riedl.de static builds (a single self-contained binary,
-// arm64 or amd64). Both are third-party static builds, same as before.
+// macOS and Linux pull the martin-riedl.de static builds (a single self-contained
+// binary). All third-party static builds.
 const FFMPEG_BUILD = IS_MAC
   ? { url: `https://ffmpeg.martin-riedl.de/redirect/latest/macos/${ARCH === 'arm64' ? 'arm64' : 'amd64'}/release/ffmpeg.zip`, name: `ffmpeg-mac-${ARCH}.zip` }
+  : IS_LINUX
+  ? { url: 'https://ffmpeg.martin-riedl.de/redirect/latest/linux/amd64/release/ffmpeg.zip', name: 'ffmpeg-linux-x64.zip' }
   : { url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip', name: 'ffmpeg-win64-gpl.zip' }
 
 const isDev = !app.isPackaged
@@ -110,7 +115,7 @@ function getVadModel() {
 // component's string here whenever you host a newer build/asset; on the next
 // setup the app re-downloads just that component and leaves the rest alone.
 const CURRENT_VERSIONS = {
-  whisper: IS_MAC ? 'metal-1.7.6' : 'vulkan-1',
+  whisper: IS_MAC ? 'metal-1.7.6' : IS_LINUX ? 'linux-cpu-1.7.6' : 'vulkan-1',
   ffmpeg: '1',
   model: 'large-v3-turbo',
   vad: 'silero-v5.1.2',
@@ -141,6 +146,8 @@ function backfillVersionsIfNeeded() {
 function detectGPU() {
   // Every Mac runs the Metal backend, so report the GPU type without probing.
   if (IS_MAC) return 'apple'
+  // Linux ships the CPU build — don't claim a GPU.
+  if (IS_LINUX) return 'cpu'
   try {
     const out = execSync('powershell -Command "Get-WmiObject Win32_VideoController | Select-Object -ExpandProperty Name"', { timeout: 8000 }).toString()
     if (/nvidia/i.test(out)) return 'nvidia'

@@ -1,0 +1,36 @@
+name: Build Linux whisper engine
+
+# Maintainer-triggered. Builds the portable CPU whisper-cli for Linux x64 and
+# uploads whisper-linux-bin-x64.zip to the v1.0.0 release, where the app fetches
+# engine binaries at runtime. Run once, and again whenever the whisper.cpp
+# version (CURRENT_VERSIONS.whisper in electron/main.cjs) is bumped.
+
+on:
+  workflow_dispatch:
+    inputs:
+      whisper_tag:
+        description: whisper.cpp tag to build
+        default: v1.7.6
+
+permissions:
+  contents: write
+
+jobs:
+  build-engine:
+    # Build on an old distro so the glibc requirement stays broad.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake git zip
+
+      - name: Build engine
+        run: |
+          chmod +x scripts/build-linux-whisper.sh
+          ./scripts/build-linux-whisper.sh "${{ inputs.whisper_tag }}"
+
+      - name: Upload to v1.0.0 release
+        run: gh release upload v1.0.0 release/binaries/whisper-linux-bin-x64.zip --clobber --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

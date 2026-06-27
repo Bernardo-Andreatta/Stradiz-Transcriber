@@ -29,6 +29,8 @@ jobs:
             script: dist:mac
           - os: windows-latest
             script: dist:win
+          - os: ubuntu-22.04
+            script: dist:linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +57,7 @@ jobs:
           path: |
             release/*.dmg
             release/*.exe
+            release/*.AppImage
           if-no-files-found: warn
 
       # Drop electron-builder's differential-update metadata so only the
@@ -72,6 +75,7 @@ jobs:
           files: |
             release/*.dmg
             release/*.exe
+            release/*.AppImage
           fail_on_unmatched_files: false
 
   # Set the release body once both installers are uploaded: an auto-generated

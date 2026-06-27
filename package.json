@@ -11,7 +11,8 @@
     "start": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "preview": "vite preview",
     "dist:win": "vite build && electron-builder --win --x64 --publish never",
-    "dist:mac": "vite build && electron-builder --mac --arm64 --x64 --publish never"
+    "dist:mac": "vite build && electron-builder --mac --arm64 --x64 --publish never",
+    "dist:linux": "vite build && electron-builder --linux --x64 --publish never"
   },
   "dependencies": {
     "electron-is-dev": "^3.0.1",
@@ -67,6 +68,14 @@
     },
     "dmg": {
       "title": "${productName}"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "build/icon.png",
+      "category": "AudioVideo",
+      "artifactName": "${productName}-${arch}.${ext}"
     },
     "win": {
       "target": [
