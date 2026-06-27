@@ -119,7 +119,7 @@ Models and the engine live in `~/.whisper-app` (macOS) or `%USERPROFILE%\.whispe
 
 ## Development
 
-**Prerequisites:** Node.js 20+, Git. Builds on Windows and macOS.
+**Prerequisites:** Node.js 20+, Git. Builds on Windows, macOS, and Linux.
 
 ```bash
 git clone https://github.com/Bernardo-Andreatta/Stradiz-Transcriber.git
@@ -135,20 +135,29 @@ On first run in dev mode the Setup screen downloads the whisper.cpp engine, FFmp
 ```bash
 npm run dist:win     # outputs release/Stradiz Transcriber Setup.exe
 npm run dist:mac     # outputs release/Stradiz Transcriber-{arm64,x64}.dmg
+npm run dist:linux   # outputs release/Stradiz Transcriber-x86_64.AppImage
 ```
 
-**Refresh the macOS whisper engine asset** (maintainers only — produces the universal binary the installer downloads; run once per whisper.cpp version bump, then upload to the release):
+**Refresh a whisper engine asset** (maintainers only — produces the binary the installer downloads; run once per whisper.cpp version bump, then upload to the `v1.0.0` release):
 
 ```bash
+# macOS — universal Metal build (run on Apple Silicon)
 brew install cmake
 ./scripts/build-mac-whisper.sh           # → release/binaries/whisper-metal-bin-universal.zip
 gh release upload v1.0.0 "release/binaries/whisper-metal-bin-universal.zip" \
   --repo Bernardo-Andreatta/Stradiz-Transcriber
+
+# Linux — portable CPU build. Easiest via CI (no local Linux needed):
+gh workflow run engine-linux.yml -f whisper_tag=v1.7.6
+#   builds whisper-linux-bin-x64.zip on ubuntu-22.04 and uploads it to v1.0.0
+# Or locally on a Linux box: ./scripts/build-linux-whisper.sh
 ```
+
+The Windows Vulkan engine is hosted manually on `v1.0.0` and rarely changes.
 
 ## Releasing
 
-Releases are built by GitHub Actions (`.github/workflows/release.yml`) — no local Windows machine needed. Pushing a version tag builds the Windows `.exe` and the macOS DMGs on their native runners and attaches them to that tag's GitHub release.
+Releases are built by GitHub Actions (`.github/workflows/release.yml`) — no local machine of each OS needed. Pushing a version tag builds the Windows `.exe`, the macOS DMGs, and the Linux AppImage on their native runners and attaches them to that tag's GitHub release.
 
 ### Two kinds of asset, on purpose
 
@@ -156,7 +165,7 @@ The app ships in two layers that version independently:
 
 | Layer | What | Where it lives | When it changes |
 |---|---|---|---|
-| **Installer** | the Electron app shell (`.exe` / `.dmg`) | the release for each version tag (`v1.0.1`, …) | every app release |
+| **Installer** | the Electron app shell (`.exe` / `.dmg` / `.AppImage`) | the release for each version tag (`v1.0.1`, …) | every app release |
 | **Engine** | whisper.cpp + ffmpeg binaries + model | hosted once on the **`v1.0.0`** release | only when the engine itself changes |
 
 `RELEASE_BASE` in `electron/main.cjs` points the in-app downloader at the **`v1.0.0`** engine assets. It deliberately does **not** track the app version — bumping the app to `v1.0.2` does not move the engine. Don't change `RELEASE_BASE` unless you re-host the engine zips somewhere else.
@@ -170,7 +179,7 @@ The app ships in two layers that version independently:
    git checkout main && git pull
    git tag vX.Y.Z && git push origin vX.Y.Z
    ```
-4. Actions builds both OSes and attaches `Stradiz.Transcriber.Setup.exe` + the two DMGs to the `vX.Y.Z` release.
+4. Actions builds all three OSes and attaches `Stradiz.Transcriber.Setup.exe`, the two DMGs, and the `.AppImage` to the `vX.Y.Z` release.
 
 Tag the version *after* the bump is on `main` — otherwise electron-builder packages the old version number onto the new release.
 
@@ -179,7 +188,7 @@ Tag the version *after* the bump is on `main` — otherwise electron-builder pac
 The app re-downloads a component only when it's missing or **out of date**, tracked per component in `~/.whisper-app/installed.json`.
 
 1. Bump the relevant string in `CURRENT_VERSIONS` (`electron/main.cjs`).
-2. Re-host the matching asset on the `v1.0.0` release (e.g. run `scripts/build-mac-whisper.sh` for whisper, then `gh release upload v1.0.0 …`).
+2. Re-host the matching asset on the `v1.0.0` release (e.g. run `scripts/build-mac-whisper.sh` or trigger `engine-linux.yml` for whisper, then `gh release upload v1.0.0 …`).
 3. On next launch, Setup shows **"Update engine"** and re-downloads only the changed component — existing installs aren't forced to refetch everything.
 
 ## Tech stack
@@ -191,7 +200,7 @@ The app re-downloads a component only when it's missing or **out of date**, trac
 | Icons | Lucide React |
 | Transcription | whisper.cpp (ggml-large-v3-turbo) |
 | Audio processing | FFmpeg |
-| Packaging | electron-builder (NSIS on Windows, DMG on macOS) |
+| Packaging | electron-builder (NSIS on Windows, DMG on macOS, AppImage on Linux) |
 
 ## Open-source components
 
