@@ -1,10 +1,28 @@
 import { useState, useEffect, useRef } from 'react'
-import { FolderOpen, Folder, Loader2, CheckCircle2, Clock, AlertTriangle, Play, Square, X, XCircle, Terminal, ChevronDown, ChevronUp } from 'lucide-react'
+import { FolderOpen, Folder, Loader2, CheckCircle2, Clock, AlertTriangle, Play, Square, X, XCircle, Terminal, ChevronDown, ChevronUp, Languages } from 'lucide-react'
 import LogConsole from '../components/LogConsole.jsx'
 import Waveform from '../components/Waveform.jsx'
 import './Transcribe.css'
 
 const ACCEPTED_EXT = ['mp3', 'mp4', 'm4a', 'wav', 'ogg', 'flac', 'mkv', 'mov', 'avi', 'webm', 'aac']
+
+// whisper.cpp language codes. 'auto' detects the spoken language per file.
+const LANGUAGES = [
+  { code: 'auto', label: 'Auto-detect' },
+  { code: 'en', label: 'English' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'fr', label: 'French' },
+  { code: 'de', label: 'German' },
+  { code: 'it', label: 'Italian' },
+  { code: 'nl', label: 'Dutch' },
+  { code: 'ru', label: 'Russian' },
+  { code: 'zh', label: 'Chinese' },
+  { code: 'ja', label: 'Japanese' },
+  { code: 'ko', label: 'Korean' },
+  { code: 'ar', label: 'Arabic' },
+  { code: 'hi', label: 'Hindi' },
+]
 
 export default function Transcribe({ config, onDone, hidden }) {
   const [files, setFiles] = useState([])
@@ -12,6 +30,7 @@ export default function Transcribe({ config, onDone, hidden }) {
   const [fileStates, setFileStates] = useState({})
   const [lines, setLines] = useState({})
   const [removeSilence, setRemoveSilence] = useState(true)
+  const [language, setLanguage] = useState('auto')
   const [outputDir, setOutputDir] = useState(null)
   const [debugLogs, setDebugLogs] = useState([])
   const [showLog, setShowLog] = useState(false)
@@ -85,7 +104,7 @@ export default function Transcribe({ config, onDone, hidden }) {
     linesRef.current = {}
     setLines({})
     setFileStates({})
-    await window.api.transcribe.start(files, { ...config, removeSilence, outputDir })
+    await window.api.transcribe.start(files, { ...config, removeSilence, outputDir, language })
     setRunning(false)
     onDone()
   }
@@ -153,6 +172,20 @@ export default function Transcribe({ config, onDone, hidden }) {
           <input type="checkbox" checked={removeSilence} onChange={e => setRemoveSilence(e.target.checked)} />
           <span>Remove silence before transcribing</span>
         </label>
+
+        <div className="lang-row">
+          <span className="lang-label"><Languages size={13} /> Language</span>
+          <select
+            className="lang-select"
+            value={language}
+            onChange={e => setLanguage(e.target.value)}
+            disabled={running}
+          >
+            {LANGUAGES.map(l => (
+              <option key={l.code} value={l.code}>{l.label}</option>
+            ))}
+          </select>
+        </div>
 
         <div className="output-dir-row">
           <button className="output-dir-btn" onClick={pickOutputDir} disabled={running}>

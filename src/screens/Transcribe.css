@@ -72,6 +72,29 @@
 .toggle-row input { accent-color: var(--accent); cursor: pointer; }
 .toggle-row:hover { color: var(--text); }
 
+.lang-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 6px 0;
+}
+.lang-label { display: inline-flex; align-items: center; gap: 6px; }
+.lang-select {
+  margin-left: auto;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.lang-select:hover:not(:disabled) { border-color: var(--accent); }
+.lang-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .run-row { display: flex; gap: 8px; margin-top: auto; }
 .run-btn { flex: 1; padding: 12px; font-size: 14px; }
 .stop-btn { padding: 12px 16px; font-size: 14px; flex-shrink: 0; }

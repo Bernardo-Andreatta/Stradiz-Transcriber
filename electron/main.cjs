@@ -724,7 +724,10 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
       await new Promise(resolve => {
         // Vulkan build auto-detects GPU; only pass -ng to force CPU when no GPU build
         const gpuArgs = config.whisperHasGpu ? [] : ['-ng']
-        const args = ['-m', model, '-l', 'pt', '-f', segWav,
+        // 'auto' lets whisper detect the spoken language per file; otherwise
+        // force the user-picked code (pt, en, es…). Defaults to auto-detect.
+        const lang = config.language || 'auto'
+        const args = ['-m', model, '-l', lang, '-f', segWav,
           '--no-speech-thold', '0.3', '--entropy-thold', '2.8',
           '--no-fallback', '--print-progress', ...gpuArgs]
         send('transcribe:log', `[whisper] spawn (pass ${skip + 1}): whisper-cli ${args.join(' ')}`)

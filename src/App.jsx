@@ -34,7 +34,7 @@ function AboutModal({ onClose }) {
             <span className="credit-author">© FFmpeg contributors — LGPL / GPL</span>
           </div>
         </div>
-        <div className="modal-version">v1.0.5</div>
+        <div className="modal-version">v1.0.6</div>
       </div>
     </div>
   )
