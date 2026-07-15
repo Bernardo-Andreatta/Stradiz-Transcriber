@@ -2,14 +2,6 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { FolderOpen, Trash2, Save, Pencil, Play, Pause, Plus } from 'lucide-react'
 import './Catalog.css'
 
-function timeToSeconds(t) {
-  if (!t) return 0
-  const parts = t.split(':').map(Number)
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
-  if (parts.length === 2) return parts[0] * 60 + parts[1]
-  return 0
-}
-
 function srtToMs(srt) {
   if (!srt) return 0
   const [hms, ms = '0'] = srt.split(',')
@@ -30,9 +22,10 @@ function parseUserTime(input) {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(ms).padStart(3,'0')}`
 }
 
+// Same display format readSrt produces: "MM:SS.mmm", hours kept when nonzero.
 function srtToDisplay(srt) {
   if (!srt) return ''
-  return srt.split(',')[0].replace(/^00:/, '')
+  return srt.replace(',', '.').replace(/^00:/, '')
 }
 
 function InsertForm({ insertTime, setInsertTime, insertText, setInsertText, commitInsert, cancel, insertTimeRef }) {
@@ -93,9 +86,11 @@ export default function Catalog() {
   }, [])
 
   // The currently-playing subtitle is derived from playback position, not stored
-  // in state — keeps it in sync without a setState-in-effect cascade.
+  // in state — keeps it in sync without a setState-in-effect cascade. Always
+  // compare against startRaw: it's the millisecond-precise time that actually
+  // gets saved to the SRT, so tracker, seek, and file can never disagree.
   const activeIdx = useMemo(
-    () => subtitles.findLastIndex(s => timeToSeconds(s.time) <= currentTime),
+    () => subtitles.findLastIndex(s => srtToMs(s.startRaw) / 1000 <= currentTime),
     [subtitles, currentTime]
   )
 
@@ -138,8 +133,10 @@ export default function Catalog() {
   }
 
   const commitEdit = (i) => {
-    if (editText.trim() === subtitles[i].text) { setEditingIdx(-1); return }
-    setSubtitles(subtitles.map((s, idx) => idx === i ? { ...s, text: editText.trim() } : s))
+    // Blank lines inside a subtitle would split its block in the saved SRT
+    const clean = editText.split('\n').map(s => s.trim()).filter(Boolean).join('\n')
+    if (clean === subtitles[i].text) { setEditingIdx(-1); return }
+    setSubtitles(subtitles.map((s, idx) => idx === i ? { ...s, text: clean } : s))
     setEditingIdx(-1)
     setDirty(true)
   }
@@ -168,7 +165,7 @@ export default function Catalog() {
   }
 
   const commitInsert = () => {
-    const text = insertText.trim()
+    const text = insertText.split('\n').map(s => s.trim()).filter(Boolean).join('\n')
     const timeStr = insertTime.trim()
     if (!text || !timeStr) { setInsertingAfterIdx(null); return }
     const startRaw = parseUserTime(timeStr)
@@ -361,7 +358,7 @@ export default function Catalog() {
                         clearTimeout(clickTimerRef.current)
                         clickTimerRef.current = setTimeout(() => {
                           if (audioRef.current) {
-                            audioRef.current.currentTime = timeToSeconds(line.time)
+                            audioRef.current.currentTime = srtToMs(line.startRaw) / 1000
                             audioRef.current.play()
                           }
                         }, 220)

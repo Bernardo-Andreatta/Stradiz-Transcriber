@@ -8,7 +8,7 @@ const path = require('path')
 const fs = require('fs')
 const https = require('https')
 const http = require('http')
-const { spawn, execSync } = require('child_process')
+const { spawn, spawnSync, execSync } = require('child_process')
 const os = require('os')
 
 // ---- Platform abstraction -------------------------------------------------
@@ -631,6 +631,20 @@ function msToDisplayTime(ms) {
   return msToSrtTime(ms).split(',')[0].replace(/^00:/, '')
 }
 
+// Whether the installed whisper-cli understands --vad (added in whisper.cpp
+// 1.7.6). Probed once per app run — self-hosted builds may predate it.
+let whisperVadSupport = null
+function whisperSupportsVad(whisperCli) {
+  if (whisperVadSupport !== null) return whisperVadSupport
+  try {
+    const out = spawnSync(whisperCli, ['--help'], { encoding: 'utf8', timeout: 10000 })
+    whisperVadSupport = `${out.stdout || ''}${out.stderr || ''}`.includes('--vad')
+  } catch {
+    whisperVadSupport = false
+  }
+  return whisperVadSupport
+}
+
 ipcMain.handle('transcribe:start', async (event, { files, config }) => {
   currentConfig = config
   stopRequested = false
@@ -656,7 +670,12 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
     const finalSrt = path.join(outDir, base + '.srt')
     const finalTxt = path.join(outDir, base + '.txt')
 
-    // Convert to silence-removed wav once — kept for all recovery passes
+    // Convert to 16kHz wav once — kept for all recovery passes. The audio is
+    // NEVER silence-stripped here: cutting samples out shortens the timeline
+    // whisper timestamps against, so every removed gap would shift all later
+    // subtitles earlier relative to the original file the catalog plays.
+    // Silence skipping is done by whisper's built-in VAD instead (below),
+    // which keeps timestamps on the original timeline.
     if (!ffmpegExe || !fs.existsSync(ffmpegExe)) {
       send('transcribe:file', { file: filePath, status: 'error', error: 'ffmpeg not found — please re-run Setup' })
       continue
@@ -664,10 +683,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
     send('transcribe:file', { file: filePath, status: 'converting' })
     send('transcribe:log', `[ffmpeg] Converting: ${path.basename(filePath)}`)
     const convertOk = await new Promise(resolve => {
-      const silenceFilter = config.removeSilence
-        ? ['-af', 'silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-50dB']
-        : []
-      const ff = spawn(ffmpegExe, ['-i', filePath, ...silenceFilter,
+      const ff = spawn(ffmpegExe, ['-i', filePath,
         '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath, '-y'])
       currentProc = ff
       ff.stderr.on('data', d => send('transcribe:log', `[ffmpeg] ${d.toString().trim()}`))
@@ -727,9 +743,19 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         // 'auto' lets whisper detect the spoken language per file; otherwise
         // force the user-picked code (pt, en, es…). Defaults to auto-detect.
         const lang = config.language || 'auto'
+        // Silence skipping via whisper's silero VAD: skips non-speech chunks
+        // for speed while reporting timestamps on the unmodified timeline.
+        let vadArgs = []
+        if (config.removeSilence && config.vadModel && fs.existsSync(config.vadModel)) {
+          if (whisperSupportsVad(whisperCli)) {
+            vadArgs = ['--vad', '--vad-model', config.vadModel]
+          } else {
+            send('transcribe:log', '[whisper] this engine build has no VAD support — transcribing with silence included')
+          }
+        }
         const args = ['-m', model, '-l', lang, '-f', segWav,
           '--no-speech-thold', '0.3', '--entropy-thold', '2.8',
-          '--no-fallback', '--print-progress', ...gpuArgs]
+          '--no-fallback', '--print-progress', ...gpuArgs, ...vadArgs]
         send('transcribe:log', `[whisper] spawn (pass ${skip + 1}): whisper-cli ${args.join(' ')}`)
         const proc = spawn(whisperCli, args)
         currentProc = proc
@@ -967,23 +993,31 @@ ipcMain.handle('catalog:import', async () => {
   return catalog
 })
 
+// Blank lines inside a subtitle's text would split its SRT block apart on the
+// next read, silently dropping text and breaking cue timing — strip them.
+function cleanSubText(t) {
+  return (t || '').replace(/\r/g, '').split('\n').map(s => s.trim()).filter(Boolean).join('\n')
+}
+
 ipcMain.handle('file:saveSrt', (event, { srtPath, txtPath, lines }) => {
   const srt = lines.map((line, i) => {
     const start = line.startRaw || '00:00:00,000'
     const end = line.endRaw || '00:00:01,000'
-    return `${i + 1}\n${start} --> ${end}\n${line.text}`
+    return `${i + 1}\n${start} --> ${end}\n${cleanSubText(line.text)}`
   }).join('\n\n')
   if (srtPath) fs.writeFileSync(srtPath, srt, 'utf8')
 
   const resolvedTxt = txtPath || (srtPath ? srtPath.replace(/\.srt$/i, '.txt') : null)
-  const txt = lines.map(l => l.text).join('\n')
+  const txt = lines.map(l => cleanSubText(l.text)).join('\n')
   if (resolvedTxt) fs.writeFileSync(resolvedTxt, txt, 'utf8')
 })
 
 ipcMain.handle('file:readSrt', (event, srtPath) => {
   if (!srtPath || !fs.existsSync(srtPath)) return []
   const text = fs.readFileSync(srtPath, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-  const blocks = text.trim().split(/\n\n+/)
+  // Split only where a new cue actually starts (index line + timestamp line),
+  // so stray blank lines inside a cue's text don't break the block apart.
+  const blocks = text.trim().split(/\n\n+(?=\d+\s*\n\d{2}:\d{2}:\d{2})/)
   return blocks.map(block => {
     const lines = block.split('\n')
     const timeLine = lines[1] || ''

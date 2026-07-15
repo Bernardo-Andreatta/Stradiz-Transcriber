@@ -170,7 +170,7 @@ export default function Transcribe({ config, onDone, hidden }) {
 
         <label className="toggle-row">
           <input type="checkbox" checked={removeSilence} onChange={e => setRemoveSilence(e.target.checked)} />
-          <span>Remove silence before transcribing</span>
+          <span>Skip silence while transcribing (keeps subtitle timing)</span>
         </label>
 
         <div className="lang-row">
