@@ -290,6 +290,30 @@
   font-size: 11px;
   color: var(--accent2);
 }
+.saved-hint { color: var(--text-dim); }
+
+.autosave-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.autosave-toggle input {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+.autosave-toggle:hover { color: var(--text); }
+
+.autosave-status {
+  font-size: 11px;
+  color: var(--accent2);
+  white-space: nowrap;
+}
 
 .player-controls {
   display: flex;

@@ -74,12 +74,16 @@ export default function Catalog() {
   const [duration, setDuration] = useState(0)
   const [hoverTime, setHoverTime] = useState(null)
   const [hoverX, setHoverX] = useState(0)
+  const [autoSave, setAutoSave] = useState(() => {
+    try { return localStorage.getItem('catalogAutoSave') === '1' } catch { return false }
+  })
   const audioRef = useRef(null)
   const subtitleRef = useRef(null)
   const insertTimeRef = useRef(null)
   const seekTimerRef = useRef(null)
   const progressRef = useRef(null)
   const clickTimerRef = useRef(null)
+  const resumeAfterEditRef = useRef(false)
 
   useEffect(() => {
     window.api.catalog.load().then(setItems)
@@ -114,6 +118,20 @@ export default function Catalog() {
     if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [activeIdx])
 
+  // Remember the auto-save preference across sessions.
+  useEffect(() => {
+    try { localStorage.setItem('catalogAutoSave', autoSave ? '1' : '0') } catch { /* ignore */ }
+  }, [autoSave])
+
+  // With auto-save on, persist edits a moment after they stop. Re-runs on each
+  // change to subtitles, so the timer debounces rapid successive edits.
+  useEffect(() => {
+    if (!autoSave || !dirty || !selected || saving) return
+    const t = setTimeout(() => { save() }, 1000)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSave, dirty, subtitles, selected, saving])
+
   const deleteItem = async (e, id) => {
     e.stopPropagation()
     const updated = await window.api.catalog.delete(id)
@@ -130,15 +148,32 @@ export default function Catalog() {
     setInsertingAfterIdx(null)
     setEditingIdx(i)
     setEditText(text)
+    // Pause playback while editing so the audio doesn't run past the line being
+    // fixed; it resumes automatically once the edit is committed or cancelled.
+    const audio = audioRef.current
+    if (audio && !audio.paused) {
+      resumeAfterEditRef.current = true
+      audio.pause()
+    }
+  }
+
+  // Leave edit mode, resuming playback if we auto-paused when the edit began.
+  const endEditing = () => {
+    setEditingIdx(-1)
+    if (resumeAfterEditRef.current) {
+      resumeAfterEditRef.current = false
+      audioRef.current?.play()
+    }
   }
 
   const commitEdit = (i) => {
     // Blank lines inside a subtitle would split its block in the saved SRT
     const clean = editText.split('\n').map(s => s.trim()).filter(Boolean).join('\n')
-    if (clean === subtitles[i].text) { setEditingIdx(-1); return }
-    setSubtitles(subtitles.map((s, idx) => idx === i ? { ...s, text: clean } : s))
-    setEditingIdx(-1)
-    setDirty(true)
+    if (clean !== subtitles[i].text) {
+      setSubtitles(subtitles.map((s, idx) => idx === i ? { ...s, text: clean } : s))
+      setDirty(true)
+    }
+    endEditing()
   }
 
   const startInsert = (afterIdx, e) => {
@@ -275,11 +310,18 @@ export default function Catalog() {
             <div className="player-top">
               <div className="player-name-row">
                 <span className="player-name">{selected.name}</span>
-                {dirty && (
+                {!autoSave && dirty && (
                   <button className="btn-primary save-btn" onClick={save} disabled={saving}>
                     {saving ? 'Saving...' : <><Save size={13} /> Save edits</>}
                   </button>
                 )}
+                {autoSave && (dirty || saving) && (
+                  <span className="autosave-status">{saving ? 'Saving…' : 'Saving soon…'}</span>
+                )}
+                <label className="autosave-toggle" title="Automatically save edits after you make them">
+                  <input type="checkbox" checked={autoSave} onChange={e => setAutoSave(e.target.checked)} />
+                  <span>Auto-save</span>
+                </label>
               </div>
               <audio
                 ref={audioRef}
@@ -335,7 +377,8 @@ export default function Catalog() {
                   ))}
                 </div>
               </div>
-              {dirty && <div className="unsaved-hint">You have unsaved edits</div>}
+              {!autoSave && dirty && <div className="unsaved-hint">You have unsaved edits</div>}
+              {autoSave && !dirty && !saving && <div className="unsaved-hint saved-hint">All changes saved</div>}
             </div>
 
             <div className="subtitle-panel" ref={subtitleRef}>
@@ -375,7 +418,7 @@ export default function Catalog() {
                         onBlur={() => commitEdit(i)}
                         onKeyDown={e => {
                           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEdit(i) }
-                          if (e.key === 'Escape') setEditingIdx(-1)
+                          if (e.key === 'Escape') endEditing()
                         }}
                         onClick={e => e.stopPropagation()}
                       />
