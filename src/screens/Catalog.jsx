@@ -28,30 +28,86 @@ function srtToDisplay(srt) {
   return srt.replace(',', '.').replace(/^00:/, '')
 }
 
-function InsertForm({ insertTime, setInsertTime, insertText, setInsertText, commitInsert, cancel, insertTimeRef }) {
+// Milliseconds since start → SRT "HH:MM:SS,mmm".
+function msToSrtRaw(ms) {
+  const clamped = Math.max(0, Math.round(ms))
+  const t = Math.floor(clamped / 1000)
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(clamped % 1000).padStart(3,'0')}`
+}
+
+// Local-state insert form. Keeping the draft here (not in Catalog) means typing
+// doesn't re-render the whole subtitle list on every keystroke.
+function InsertForm({ defaultTime, onAdd, onCancel }) {
+  const [time, setTime] = useState(defaultTime || '')
+  const [text, setText] = useState('')
+  const timeRef = useRef(null)
+  useEffect(() => { timeRef.current?.focus() }, [])
   return (
     <div className="sub-insert-form" onClick={e => e.stopPropagation()}>
       <input
-        ref={insertTimeRef}
+        ref={timeRef}
         className="insert-time-input"
         placeholder="m:ss"
-        value={insertTime}
-        onChange={e => setInsertTime(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Escape') cancel() }}
+        value={time}
+        onChange={e => setTime(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Escape') onCancel() }}
       />
       <textarea
         className="insert-text-input"
         placeholder="Type the missing text..."
-        value={insertText}
-        onChange={e => setInsertText(e.target.value)}
+        value={text}
+        onChange={e => setText(e.target.value)}
         onKeyDown={e => {
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitInsert() }
-          if (e.key === 'Escape') cancel()
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onAdd(time, text) }
+          if (e.key === 'Escape') onCancel()
         }}
       />
       <div className="insert-actions">
-        <button className="btn-primary insert-save-btn" onClick={commitInsert}>Add</button>
-        <button className="btn-secondary insert-cancel-btn" onClick={cancel}>Cancel</button>
+        <button className="btn-primary insert-save-btn" onClick={() => onAdd(time, text)}>Add</button>
+        <button className="btn-secondary insert-cancel-btn" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  )
+}
+
+// Inline editor for a line: adjustable start/end timestamps, text, and delete.
+// Holds its own draft state so keystrokes don't re-render the full list.
+function LineEditor({ line, onSave, onDelete, onCancel }) {
+  const [start, setStart] = useState(srtToDisplay(line.startRaw))
+  const [end, setEnd] = useState(srtToDisplay(line.endRaw))
+  const [text, setText] = useState(line.text)
+  const textRef = useRef(null)
+  useEffect(() => {
+    const el = textRef.current
+    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) }
+  }, [])
+  const save = () => onSave({ start, end, text })
+  const onTimeKey = e => {
+    if (e.key === 'Enter') { e.preventDefault(); save() }
+    if (e.key === 'Escape') onCancel()
+  }
+  return (
+    <div className="sub-edit-form" onClick={e => e.stopPropagation()}>
+      <div className="sub-edit-timerow">
+        <input className="edit-time-input" value={start} onChange={e => setStart(e.target.value)} onKeyDown={onTimeKey} title="Start time" />
+        <span className="edit-time-sep">→</span>
+        <input className="edit-time-input" value={end} onChange={e => setEnd(e.target.value)} onKeyDown={onTimeKey} title="End time" />
+        <button className="edit-delete-btn" title="Delete this line" onClick={onDelete}><Trash2 size={12} /> Delete</button>
+      </div>
+      <textarea
+        ref={textRef}
+        className="sub-edit"
+        value={text}
+        onChange={e => setText(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save() }
+          if (e.key === 'Escape') onCancel()
+        }}
+      />
+      <div className="sub-edit-actions">
+        <button className="btn-primary insert-save-btn" onClick={save}>Save</button>
+        <button className="insert-cancel-btn" onClick={onCancel}>Cancel</button>
       </div>
     </div>
   )
@@ -63,10 +119,8 @@ export default function Catalog() {
   const [subtitles, setSubtitles] = useState([])
   const [currentTime, setCurrentTime] = useState(0)
   const [editingIdx, setEditingIdx] = useState(-1)
-  const [editText, setEditText] = useState('')
   const [insertingAfterIdx, setInsertingAfterIdx] = useState(null)
-  const [insertTime, setInsertTime] = useState('')
-  const [insertText, setInsertText] = useState('')
+  const [insertDefaultTime, setInsertDefaultTime] = useState('')
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [speed, setSpeed] = useState(1)
@@ -79,7 +133,6 @@ export default function Catalog() {
   })
   const audioRef = useRef(null)
   const subtitleRef = useRef(null)
-  const insertTimeRef = useRef(null)
   const seekTimerRef = useRef(null)
   const progressRef = useRef(null)
   const clickTimerRef = useRef(null)
@@ -144,10 +197,9 @@ export default function Catalog() {
     if (updated) setItems(updated)
   }
 
-  const startEdit = (i, text) => {
+  const startEdit = (i) => {
     setInsertingAfterIdx(null)
     setEditingIdx(i)
-    setEditText(text)
     // Pause playback while editing so the audio doesn't run past the line being
     // fixed; it resumes automatically once the edit is committed or cancelled.
     const audio = audioRef.current
@@ -162,24 +214,37 @@ export default function Catalog() {
     setEditingIdx(-1)
     if (resumeAfterEditRef.current) {
       resumeAfterEditRef.current = false
-      audioRef.current?.play()
+      // play() rejects if a pause() interrupts it — harmless, so swallow it.
+      audioRef.current?.play().catch(() => {})
     }
   }
 
-  const commitEdit = (i) => {
+  const saveEdit = (i, { start, end, text }) => {
     // Blank lines inside a subtitle would split its block in the saved SRT
-    const clean = editText.split('\n').map(s => s.trim()).filter(Boolean).join('\n')
-    if (clean !== subtitles[i].text) {
-      setSubtitles(subtitles.map((s, idx) => idx === i ? { ...s, text: clean } : s))
-      setDirty(true)
-    }
+    const clean = text.split('\n').map(s => s.trim()).filter(Boolean).join('\n')
+    const startRaw = parseUserTime(start)
+    let endRaw = parseUserTime(end)
+    // Keep end after start so the cue and all downstream timing stay valid.
+    if (srtToMs(endRaw) <= srtToMs(startRaw)) endRaw = msToSrtRaw(srtToMs(startRaw) + 2000)
+    const finalText = clean || subtitles[i].text
+    // Re-sort in case the start time moved the line relative to its neighbours.
+    const updated = subtitles
+      .map((s, idx) => idx === i ? { ...s, text: finalText, startRaw, endRaw, time: srtToDisplay(startRaw) } : s)
+      .sort((a, b) => srtToMs(a.startRaw) - srtToMs(b.startRaw))
+    setSubtitles(updated)
+    setDirty(true)
+    endEditing()
+  }
+
+  const deleteLine = (i) => {
+    setSubtitles(subtitles.filter((_, idx) => idx !== i))
+    setDirty(true)
     endEditing()
   }
 
   const startInsert = (afterIdx, e) => {
     e.stopPropagation()
     setEditingIdx(-1)
-    setInsertingAfterIdx(afterIdx)
     // Pre-fill time: midpoint between surrounding lines
     const prev = afterIdx >= 0 ? subtitles[afterIdx] : null
     const next = afterIdx + 1 < subtitles.length ? subtitles[afterIdx + 1] : null
@@ -194,22 +259,17 @@ export default function Catalog() {
       const m = Math.floor(total / 60), s = total % 60
       defaultTime = `${m}:${String(s).padStart(2,'0')}`
     }
-    setInsertTime(defaultTime)
-    setInsertText('')
-    setTimeout(() => insertTimeRef.current?.focus(), 50)
+    setInsertDefaultTime(defaultTime)
+    setInsertingAfterIdx(afterIdx)
   }
 
-  const commitInsert = () => {
-    const text = insertText.split('\n').map(s => s.trim()).filter(Boolean).join('\n')
-    const timeStr = insertTime.trim()
-    if (!text || !timeStr) { setInsertingAfterIdx(null); return }
+  const commitInsert = (time, text) => {
+    const clean = text.split('\n').map(s => s.trim()).filter(Boolean).join('\n')
+    const timeStr = (time || '').trim()
+    if (!clean || !timeStr) { setInsertingAfterIdx(null); return }
     const startRaw = parseUserTime(timeStr)
-    // endRaw = startRaw + 2 seconds
-    const endMs = srtToMs(startRaw) + 2000
-    const et = Math.floor(endMs / 1000)
-    const eh = Math.floor(et / 3600), em = Math.floor((et % 3600) / 60), es = et % 60
-    const endRaw = `${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:${String(es).padStart(2,'0')},${String(endMs % 1000).padStart(3,'0')}`
-    const newLine = { time: srtToDisplay(startRaw), startRaw, endRaw, text }
+    const endRaw = msToSrtRaw(srtToMs(startRaw) + 2000)
+    const newLine = { time: srtToDisplay(startRaw), startRaw, endRaw, text: clean }
     const updated = [...subtitles, newLine].sort((a, b) => srtToMs(a.startRaw) - srtToMs(b.startRaw))
     setSubtitles(updated)
     setInsertingAfterIdx(null)
@@ -224,7 +284,7 @@ export default function Catalog() {
     if (shouldResume) {
       if (!audio.paused) audio.pause()
       clearTimeout(seekTimerRef.current)
-      seekTimerRef.current = setTimeout(() => { seekTimerRef.current = null; audio.play() }, 250)
+      seekTimerRef.current = setTimeout(() => { seekTimerRef.current = null; audio.play().catch(() => {}) }, 250)
     }
   }
 
@@ -254,7 +314,7 @@ export default function Catalog() {
   const togglePlay = () => {
     const audio = audioRef.current
     if (!audio) return
-    if (audio.paused) { audio.play() } else { audio.pause() }
+    if (audio.paused) { audio.play().catch(() => {}) } else { audio.pause() }
   }
 
   const setPlaybackSpeed = (s) => {
@@ -389,53 +449,47 @@ export default function Catalog() {
                 </div>
               )}
 
-              {insertingAfterIdx === -1 && <InsertForm insertTime={insertTime} setInsertTime={setInsertTime} insertText={insertText} setInsertText={setInsertText} commitInsert={commitInsert} cancel={() => setInsertingAfterIdx(null)} insertTimeRef={insertTimeRef} />}
+              {insertingAfterIdx === -1 && <InsertForm defaultTime={insertDefaultTime} onAdd={commitInsert} onCancel={() => setInsertingAfterIdx(null)} />}
 
               {subtitles.map((line, i) => (
                 <div key={i}>
-                  <div
-                    data-idx={i}
-                    className={`sub-line ${i === activeIdx ? 'active' : ''} ${editingIdx === i ? 'editing' : ''}`}
-                    onClick={() => {
-                      if (editingIdx !== i && insertingAfterIdx === null) {
-                        clearTimeout(clickTimerRef.current)
-                        clickTimerRef.current = setTimeout(() => {
-                          if (audioRef.current) {
-                            audioRef.current.currentTime = srtToMs(line.startRaw) / 1000
-                            audioRef.current.play()
-                          }
-                        }, 220)
-                      }
-                    }}
-                  >
-                    <span className="sub-time">{line.time}</span>
-                    {editingIdx === i ? (
-                      <textarea
-                        className="sub-edit"
-                        value={editText}
-                        autoFocus
-                        onChange={e => setEditText(e.target.value)}
-                        onBlur={() => commitEdit(i)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEdit(i) }
-                          if (e.key === 'Escape') endEditing()
-                        }}
-                        onClick={e => e.stopPropagation()}
-                      />
-                    ) : (
+                  {editingIdx === i ? (
+                    <LineEditor
+                      line={line}
+                      onSave={vals => saveEdit(i, vals)}
+                      onDelete={() => deleteLine(i)}
+                      onCancel={endEditing}
+                    />
+                  ) : (
+                    <div
+                      data-idx={i}
+                      className={`sub-line ${i === activeIdx ? 'active' : ''}`}
+                      onClick={() => {
+                        if (insertingAfterIdx === null) {
+                          clearTimeout(clickTimerRef.current)
+                          clickTimerRef.current = setTimeout(() => {
+                            if (audioRef.current) {
+                              audioRef.current.currentTime = srtToMs(line.startRaw) / 1000
+                              audioRef.current.play().catch(() => {})
+                            }
+                          }, 220)
+                        }
+                      }}
+                    >
+                      <span className="sub-time">{line.time}</span>
                       <span
                         className="sub-text"
                         title="Double-click to edit"
-                        onDoubleClick={(e) => { e.stopPropagation(); clearTimeout(clickTimerRef.current); startEdit(i, line.text) }}
+                        onDoubleClick={(e) => { e.stopPropagation(); clearTimeout(clickTimerRef.current); startEdit(i) }}
                       >
                         {line.text}
                       </span>
-                    )}
-                    <button className="sub-edit-btn" title="Edit" onClick={e => { e.stopPropagation(); startEdit(i, line.text) }}><Pencil size={12} /></button>
-                  </div>
+                      <button className="sub-edit-btn" title="Edit" onClick={e => { e.stopPropagation(); startEdit(i) }}><Pencil size={12} /></button>
+                    </div>
+                  )}
 
                   {insertingAfterIdx === i ? (
-                    <InsertForm insertTime={insertTime} setInsertTime={setInsertTime} insertText={insertText} setInsertText={setInsertText} commitInsert={commitInsert} cancel={() => setInsertingAfterIdx(null)} insertTimeRef={insertTimeRef} />
+                    <InsertForm defaultTime={insertDefaultTime} onAdd={commitInsert} onCancel={() => setInsertingAfterIdx(null)} />
                   ) : (
                     <div className="sub-insert-row">
                       <button className="sub-insert-trigger" onClick={e => startInsert(i, e)}><Plus size={11} /></button>

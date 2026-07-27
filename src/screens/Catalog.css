@@ -262,6 +262,56 @@
 }
 .sub-edit:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(124,106,247,0.2); }
 
+.sub-edit-form {
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 2px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sub-edit-form .sub-edit { min-height: 56px; }
+
+.sub-edit-timerow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.edit-time-input {
+  width: 104px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--mono);
+  padding: 4px 8px;
+  outline: none;
+  text-align: center;
+}
+.edit-time-input:focus { border-color: var(--accent); }
+.edit-time-sep { color: var(--text-dim); font-size: 13px; }
+
+.edit-delete-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.edit-delete-btn:hover { background: var(--red); border-color: var(--red); color: #fff; }
+
+.sub-edit-actions { display: flex; gap: 6px; }
+
 .sub-edit-btn {
   background: none;
   border: none;
