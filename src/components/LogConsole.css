@@ -46,6 +46,13 @@
 .logc-btn:hover:not(:disabled) { background: var(--bg3); color: var(--text); opacity: 1; }
 .logc-btn:disabled { opacity: 0.3; }
 
+/* Wrapper lets the jump-to-bottom button float over the scroll area. */
+.logc-body-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 .logc-body {
   flex: 1;
   overflow-y: auto;
@@ -54,6 +61,26 @@
   font-size: 11.5px;
   line-height: 1.65;
 }
+
+/* Floating "follow the log again" control, shown only when scrolled up. */
+.logc-jump {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  opacity: 0.94;
+}
+.logc-jump:hover { opacity: 1; }
 .logc-empty { color: var(--text-dim); font-style: italic; }
 
 .logc-line {

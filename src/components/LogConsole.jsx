@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react'
-import { Terminal, Copy, Trash2, Check } from 'lucide-react'
+import { Terminal, Copy, Trash2, Check, ChevronDown } from 'lucide-react'
 import './LogConsole.css'
 
 // Classify a raw log line into a severity so the console can color it. The
@@ -18,11 +18,16 @@ function classify(line) {
 // the reader scrolls up to inspect history.
 export default function LogConsole({ logs, title = 'Activity', onClear, emptyHint = 'Nothing logged yet.' }) {
   const bodyRef = useRef(null)
-  const pinnedToBottom = useRef(true)
   const [copied, setCopied] = useState(false)
+  // Follow mode (terminal-style): stick to the newest line until the reader
+  // scrolls up, then pause and offer a jump-to-bottom control to resume. The
+  // stick flag is a ref so appending logs never fights a state update; the
+  // button's visibility is the only thing that needs to re-render.
+  const stick = useRef(true)
+  const [showJump, setShowJump] = useState(false)
 
   useEffect(() => {
-    if (pinnedToBottom.current && bodyRef.current) {
+    if (stick.current && bodyRef.current) {
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight
     }
   }, [logs])
@@ -30,8 +35,17 @@ export default function LogConsole({ logs, title = 'Activity', onClear, emptyHin
   const handleScroll = () => {
     const el = bodyRef.current
     if (!el) return
-    // Re-pin only when the reader returns to the bottom edge.
-    pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+    // Re-follow only when the reader returns to the bottom edge.
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+    stick.current = atBottom
+    setShowJump(!atBottom) // React bails out if the value is unchanged
+  }
+
+  const jumpToBottom = () => {
+    const el = bodyRef.current
+    if (el) el.scrollTop = el.scrollHeight
+    stick.current = true
+    setShowJump(false)
   }
 
   const copy = async () => {
@@ -60,12 +74,19 @@ export default function LogConsole({ logs, title = 'Activity', onClear, emptyHin
           )}
         </div>
       </div>
-      <div className="logc-body" ref={bodyRef} onScroll={handleScroll}>
-        {logs.length === 0
-          ? <div className="logc-empty">{emptyHint}</div>
-          : logs.map((line, i) => (
-              <div key={i} className={`logc-line ${classify(line)}`}>{line}</div>
-            ))}
+      <div className="logc-body-wrap">
+        <div className="logc-body" ref={bodyRef} onScroll={handleScroll}>
+          {logs.length === 0
+            ? <div className="logc-empty">{emptyHint}</div>
+            : logs.map((line, i) => (
+                <div key={i} className={`logc-line ${classify(line)}`}>{line}</div>
+              ))}
+        </div>
+        {showJump && logs.length > 0 && (
+          <button className="logc-jump" onClick={jumpToBottom} title="Jump to latest">
+            <ChevronDown size={16} />
+          </button>
+        )}
       </div>
     </div>
   )
