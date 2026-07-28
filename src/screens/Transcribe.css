@@ -138,12 +138,36 @@
 
 /* Engine log uses the shared LogConsole; pin it to a fixed height at the bottom */
 .engine-log-wrap {
-  height: 220px;
   flex-shrink: 0;
-  border-top: 1px solid var(--border);
   display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
-.engine-log-wrap .logc { flex: 1; border: none; border-radius: 0; }
+.engine-log-wrap .logc { flex: 1; border: none; border-radius: 0; min-height: 0; }
+
+/* Grab bar along the top edge to drag the log taller/shorter. */
+.engine-log-resize {
+  height: 7px;
+  flex-shrink: 0;
+  cursor: ns-resize;
+  background: var(--border);
+  border-top: 1px solid var(--border);
+  position: relative;
+}
+.engine-log-resize::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 34px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--text-dim);
+  opacity: 0.5;
+}
+.engine-log-resize:hover { background: var(--bg3); }
+.engine-log-resize:hover::after { opacity: 0.9; background: var(--accent2); }
 
 /* The transcript is the product — give it room, scale, and a calm reading
    rhythm. Timecodes live in a quiet monospace gutter to the left. */
@@ -184,6 +208,181 @@
 }
 .transcript-line:hover .line-time { color: var(--accent2); }
 .line-text { font-size: 15px; line-height: 1.75; color: var(--text); }
+
+/* Speaker label chip, colored per speaker via the --speaker-color custom prop. */
+.speaker-chip {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: var(--speaker-color, var(--accent2));
+  background: color-mix(in srgb, var(--speaker-color, var(--accent2)) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--speaker-color, var(--accent2)) 40%, transparent);
+}
+
+/* "Number of speakers" row shown when Detect speakers is on. */
+.speaker-count-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 2px 0 6px 26px;
+}
+.speaker-count-label { flex-shrink: 0; }
+.speaker-count-input {
+  width: 56px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.speaker-count-input:disabled { opacity: 0.5; }
+.speaker-count-hint { color: var(--text-dim); font-style: italic; white-space: nowrap; }
+
+/* Auto-floored speaker-count stepper: [−] [Auto|N] [+]. */
+.stepper {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg);
+}
+.stepper-btn {
+  width: 26px;
+  border: none;
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.stepper-btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.stepper-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.stepper-value {
+  width: 52px;
+  border: none;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  text-align: center;
+  padding: 5px 4px;
+}
+.stepper-value:disabled { opacity: 0.5; }
+.stepper-value:focus { outline: none; }
+
+/* Experimental auto-detect sensitivity control. */
+.threshold-box {
+  margin: 2px 0 6px 26px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg2);
+}
+.threshold-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+/* Value + reset, kept together and pushed to the right edge of the header. */
+.threshold-meta {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.threshold-title { letter-spacing: 0.02em; }
+.threshold-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent2);
+  background: color-mix(in srgb, var(--accent2) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent2) 40%, transparent);
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.threshold-slider-wrap { position: relative; margin: 10px 0 5px; }
+.threshold-slider {
+  display: block;
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+.threshold-slider:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Default-position marker on the track, positioned by an inline left:%. */
+.threshold-tick {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  transform: translateY(-50%);
+  background: var(--accent2);
+  border-radius: 1px;
+  opacity: 0.7;
+  pointer-events: none;
+  z-index: 0;
+}
+.threshold-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.threshold-reset:hover:not(:disabled) { color: var(--text); border-color: var(--accent2); }
+.threshold-reset:disabled { opacity: 0.4; cursor: not-allowed; }
+.threshold-ends {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.threshold-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent2);
+}
+.threshold-help {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.threshold-help strong { color: var(--text); font-weight: 600; }
+.threshold-help em { color: var(--text); font-style: italic; }
 
 .transcript-idle {
   margin: auto;
