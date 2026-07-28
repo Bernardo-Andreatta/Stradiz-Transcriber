@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { FolderOpen, Trash2, Save, Pencil, Play, Pause, Plus } from 'lucide-react'
+import { FolderOpen, Trash2, Save, Pencil, Play, Pause, Plus, Users, Loader2 } from 'lucide-react'
+import { speakerColor, speakerLabel } from '../speakers.js'
 import './Catalog.css'
 
 function srtToMs(srt) {
@@ -128,6 +129,11 @@ export default function Catalog() {
   const [duration, setDuration] = useState(0)
   const [hoverTime, setHoverTime] = useState(null)
   const [hoverX, setHoverX] = useState(0)
+  const [redetectOpen, setRedetectOpen] = useState(false)
+  const [redetectSpeakers, setRedetectSpeakers] = useState(0) // 0 = auto
+  const [redetecting, setRedetecting] = useState(false)
+  const [redetectProgress, setRedetectProgress] = useState(0)
+  const [redetectError, setRedetectError] = useState(null)
   const [autoSave, setAutoSave] = useState(() => {
     try { return localStorage.getItem('catalogAutoSave') === '1' } catch { return false }
   })
@@ -141,6 +147,38 @@ export default function Catalog() {
   useEffect(() => {
     window.api.catalog.load().then(setItems)
   }, [])
+
+  // Live progress for a re-detect run, keyed to the selected entry.
+  useEffect(() => {
+    window.api.catalog.onDiarizeProgress(({ id, progress }) => {
+      if (selected && id === selected.id) setRedetectProgress(progress)
+    })
+    return () => window.api.catalog.removeDiarizeListeners()
+  }, [selected])
+
+  // Reset the re-detect panel whenever a different file is opened.
+  useEffect(() => {
+    setRedetectOpen(false)
+    setRedetecting(false)
+    setRedetectError(null)
+  }, [selected])
+
+  const runRedetect = async () => {
+    if (!selected || redetecting) return
+    setRedetecting(true)
+    setRedetectError(null)
+    setRedetectProgress(0)
+    const res = await window.api.catalog.redetectSpeakers(selected.id, { speakers: redetectSpeakers, threshold: 0.7 })
+    setRedetecting(false)
+    if (res?.ok) {
+      setSubtitles(res.lines)
+      setDirty(false)
+      window.api.catalog.load().then(setItems)
+      setRedetectOpen(false)
+    } else {
+      setRedetectError(res?.error || 'Speaker detection failed')
+    }
+  }
 
   // The currently-playing subtitle is derived from playback position, not stored
   // in state — keeps it in sync without a setState-in-effect cascade. Always
@@ -439,6 +477,63 @@ export default function Catalog() {
               </div>
               {!autoSave && dirty && <div className="unsaved-hint">You have unsaved edits</div>}
               {autoSave && !dirty && !saving && <div className="unsaved-hint saved-hint">All changes saved</div>}
+
+              <div className="redetect">
+                {!redetectOpen ? (
+                  <button className="redetect-toggle" onClick={() => setRedetectOpen(true)}>
+                    <Users size={13} /> Detect speakers
+                  </button>
+                ) : (
+                  <div className="redetect-panel">
+                    <div className="redetect-row">
+                      <span className="redetect-label"><Users size={13} /> Speakers</span>
+                      <div className="stepper">
+                        <button
+                          type="button"
+                          className="stepper-btn"
+                          onClick={() => setRedetectSpeakers(c => (c <= 2 ? 0 : c - 1))}
+                          disabled={redetecting || redetectSpeakers === 0}
+                          aria-label="Fewer speakers"
+                        >−</button>
+                        <input
+                          className="stepper-value"
+                          type="text"
+                          inputMode="numeric"
+                          value={redetectSpeakers === 0 ? 'Auto' : String(redetectSpeakers)}
+                          onChange={e => {
+                            const digits = e.target.value.replace(/\D/g, '')
+                            if (!digits) return setRedetectSpeakers(0)
+                            const n = Math.min(20, parseInt(digits))
+                            setRedetectSpeakers(n < 2 ? 0 : n)
+                          }}
+                          disabled={redetecting}
+                        />
+                        <button
+                          type="button"
+                          className="stepper-btn"
+                          onClick={() => setRedetectSpeakers(c => (c === 0 ? 2 : Math.min(20, c + 1)))}
+                          disabled={redetecting || redetectSpeakers >= 20}
+                          aria-label="More speakers"
+                        >+</button>
+                      </div>
+                      {redetecting ? (
+                        <span className="redetect-progress"><Loader2 size={12} className="spin" /> {redetectProgress}%</span>
+                      ) : (
+                        <>
+                          <button className="btn-primary redetect-run" onClick={runRedetect}>Run</button>
+                          <button className="redetect-cancel" onClick={() => setRedetectOpen(false)}>Cancel</button>
+                        </>
+                      )}
+                    </div>
+                    <p className="redetect-help">
+                      Re-labels every line by who’s speaking — no need to transcribe again.
+                      Leave “Speakers” on Auto, or set the exact count for better accuracy.
+                      This overwrites the current speaker labels and saves the file.
+                    </p>
+                    {redetectError && <div className="redetect-error">{redetectError}</div>}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="subtitle-panel" ref={subtitleRef}>
@@ -477,6 +572,11 @@ export default function Catalog() {
                       }}
                     >
                       <span className="sub-time">{line.time}</span>
+                      {line.speaker && (
+                        <span className="speaker-chip" style={{ '--speaker-color': speakerColor(line.speaker) }}>
+                          {speakerLabel(line.speaker)}
+                        </span>
+                      )}
                       <span
                         className="sub-text"
                         title="Double-click to edit"

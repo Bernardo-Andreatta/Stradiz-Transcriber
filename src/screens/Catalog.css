@@ -183,6 +183,72 @@
 .sub-text { font-size: 15px; line-height: 1.75; color: var(--text); flex: 1; }
 .sub-line.active .sub-text { color: #fff; }
 
+/* Re-detect speakers control in the player. */
+.redetect { margin-top: 12px; }
+.redetect-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.redetect-toggle:hover { border-color: var(--accent); color: var(--accent2); }
+.redetect-panel {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg2);
+}
+.redetect-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.redetect-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.redetect-run { padding: 6px 16px; font-size: 12px; }
+.redetect-cancel {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.redetect-cancel:hover { color: var(--text); }
+.redetect-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent2);
+  font-variant-numeric: tabular-nums;
+}
+.redetect-help { margin: 10px 0 0; font-size: 11px; line-height: 1.55; color: var(--text-dim); }
+.redetect-error { margin-top: 8px; font-size: 12px; color: var(--red); }
+
+/* Speaker label chip, colored per speaker via the --speaker-color custom prop. */
+.speaker-chip {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: var(--speaker-color, var(--accent2));
+  background: color-mix(in srgb, var(--speaker-color, var(--accent2)) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--speaker-color, var(--accent2)) 40%, transparent);
+}
+
 .sub-line.editing { background: var(--bg2); cursor: default; }
 
 .sub-insert-row {
