@@ -18,7 +18,8 @@
     "electron-is-dev": "^3.0.1",
     "lucide-react": "^1.21.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "sherpa-onnx-node": "^1.13.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -44,6 +45,11 @@
       "dist/**",
       "electron/**",
       "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/sherpa-onnx-node/**",
+      "node_modules/sherpa-onnx-*/**",
+      "electron/diarize-worker.cjs"
     ],
     "directories": {
       "output": "release"

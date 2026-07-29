@@ -101,7 +101,14 @@ export default function Setup({ onReady }) {
         {Object.entries(progress).map(([task, d]) => (
           <div key={task} className="dl-row">
             <div className="dl-label">
-              <span>{task === 'model' ? 'Whisper large-v3 model' : task === 'vad' ? 'VAD silence detection model' : task === 'whisper' ? 'Whisper engine' : 'ffmpeg'}</span>
+              <span>{{
+                model: 'Whisper large-v3 model',
+                vad: 'VAD silence detection model',
+                whisper: 'Whisper engine',
+                segModel: 'Speaker segmentation model',
+                embedModel: 'Speaker embedding model',
+                ffmpeg: 'ffmpeg',
+              }[task] || task}</span>
               <span className="dl-size">{fmt(d.rcv)} / {fmt(d.total)}</span>
             </div>
             <div className="progress-bar">

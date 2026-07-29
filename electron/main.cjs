@@ -34,17 +34,9 @@ const WHISPER_BUILD = IS_MAC
   ? { url: `${RELEASE_BASE}/whisper-linux-bin-x64.zip`,       name: 'whisper-linux-bin-x64.zip',       hasGpu: false }
   : { url: `${RELEASE_BASE}/whisper-vulkan-bin-x64.zip`,      name: 'whisper-vulkan-bin-x64.zip',      hasGpu: true }
 
-// sherpa-onnx offline speaker-diarization engine per platform. All three are the
-// official k2-fsa prebuilt "shared" bundles: a `bin/` with the diarization CLI
-// plus the shared libs (onnxruntime, sherpa C-API) it links against. Pinned to a
-// known-good release. These are .tar.bz2, not .zip (see extractArchive).
-const SHERPA_VERSION = 'v1.12.14'
-const SHERPA_RELEASE = `https://github.com/k2-fsa/sherpa-onnx/releases/download/${SHERPA_VERSION}`
-const SHERPA_BUILD = IS_MAC
-  ? { url: `${SHERPA_RELEASE}/sherpa-onnx-${SHERPA_VERSION}-osx-universal2-shared.tar.bz2`, name: `sherpa-onnx-${SHERPA_VERSION}-osx-universal2-shared.tar.bz2` }
-  : IS_LINUX
-  ? { url: `${SHERPA_RELEASE}/sherpa-onnx-${SHERPA_VERSION}-linux-x64-shared.tar.bz2`,      name: `sherpa-onnx-${SHERPA_VERSION}-linux-x64-shared.tar.bz2` }
-  : { url: `${SHERPA_RELEASE}/sherpa-onnx-${SHERPA_VERSION}-win-x64-shared.tar.bz2`,        name: `sherpa-onnx-${SHERPA_VERSION}-win-x64-shared.tar.bz2` }
+// Speaker diarization runs in-process via the sherpa-onnx-node addon (see
+// electron/diarize-worker.cjs) — no engine binary to download. Only the two ONNX
+// models below are fetched at Setup.
 
 // Diarization models (platform-independent). Segmentation is a .tar.bz2 that
 // extracts to a folder holding model.onnx + model.int8.onnx; embedding is a bare
@@ -72,7 +64,6 @@ const APP_DATA = path.join(os.homedir(), '.whisper-app')
 const WHISPER_DIR = path.join(APP_DATA, 'whisper.cpp')
 const MODELS_DIR = path.join(APP_DATA, 'models')
 const FFMPEG_DIR = path.join(APP_DATA, 'ffmpeg')
-const SHERPA_DIR = path.join(APP_DATA, 'sherpa')
 const DB_FILE = path.join(APP_DATA, 'catalog.json')
 
 function ensureDirs() {
@@ -135,24 +126,7 @@ function getVadModel() {
   return path.join(MODELS_DIR, 'ggml-silero-v5.1.2.bin')
 }
 
-// ---- Speaker diarization (sherpa-onnx) ------------------------------------
-// The diarization CLI is unpacked somewhere under SHERPA_DIR/bin; find it
-// recursively (layout differs slightly per platform bundle).
-function getDiarizeCli() {
-  return findExeInDir(SHERPA_DIR, 'sherpa-onnx-offline-speaker-diarization' + EXE)
-}
-
-// The exe links against shared libs shipped in a sibling of bin/ (usually lib/).
-// Return that dir so we can put it on the loader path when spawning.
-function getSherpaLibDir() {
-  const cli = getDiarizeCli()
-  if (!cli) return null
-  const binDir = path.dirname(cli)
-  const libDir = path.join(path.dirname(binDir), 'lib')
-  // Windows bundles keep the DLLs next to the exe; Unix bundles use ../lib.
-  return fs.existsSync(libDir) ? libDir : binDir
-}
-
+// ---- Speaker diarization models -------------------------------------------
 function getSegModel() {
   return path.join(MODELS_DIR, 'sherpa-onnx-pyannote-segmentation-3-0', 'model.int8.onnx')
 }
@@ -170,7 +144,6 @@ const CURRENT_VERSIONS = {
   ffmpeg: '1',
   model: 'large-v3-turbo',
   vad: 'silero-v5.1.2',
-  sherpa: SHERPA_VERSION,
   segModel: 'pyannote-segmentation-3-0',
   embedModel: 'campplus-zh-en-common-advanced',
 }
@@ -205,7 +178,6 @@ function backfillVersionsIfNeeded() {
     model: CURRENT_VERSIONS.model,
     vad: CURRENT_VERSIONS.vad,
   }
-  if (getDiarizeCli()) patch.sherpa = CURRENT_VERSIONS.sherpa
   if (fs.existsSync(getSegModel())) patch.segModel = CURRENT_VERSIONS.segModel
   if (fs.existsSync(getEmbedModel())) patch.embedModel = CURRENT_VERSIONS.embedModel
   writeInstalled(patch)
@@ -412,14 +384,13 @@ async function setupWhisper(win) {
   const needsFfmpeg = !ffmpeg || !isCurrent('ffmpeg')
   const needsModel = !fs.existsSync(model) || !isCurrent('model')
   const needsVad = !fs.existsSync(vadModel) || !isCurrent('vad')
-  const needsSherpa = !getDiarizeCli() || !isCurrent('sherpa')
   const needsSeg = !fs.existsSync(getSegModel()) || !isCurrent('segModel')
   const needsEmbed = !fs.existsSync(getEmbedModel()) || !isCurrent('embedModel')
 
-  if (!needsWhisper && !needsFfmpeg && !needsModel && !needsVad && !needsSherpa && !needsSeg && !needsEmbed) {
+  if (!needsWhisper && !needsFfmpeg && !needsModel && !needsVad && !needsSeg && !needsEmbed) {
     send('setup:done', {
       whisperCli, ffmpeg: getFFmpeg(), model, vadModel, gpu,
-      diarizeCli: getDiarizeCli(), segModel: getSegModel(), embedModel: getEmbedModel(),
+      segModel: getSegModel(), embedModel: getEmbedModel(),
     })
     return
   }
@@ -543,33 +514,6 @@ async function setupWhisper(win) {
     })
   }
 
-  // Download the sherpa-onnx diarization engine if needed
-  if (needsSherpa) {
-    const sherpaZip = path.join(APP_DATA, 'sherpa.tar.bz2')
-    await withRetry('speaker engine', send, async (attempt) => {
-      if (attempt === 1) send('setup:status', 'Downloading speaker-detection engine...')
-      try { if (fs.existsSync(sherpaZip)) fs.unlinkSync(sherpaZip) } catch {}
-      if (fs.existsSync(SHERPA_DIR)) fs.rmSync(SHERPA_DIR, { recursive: true, force: true })
-      fs.mkdirSync(SHERPA_DIR, { recursive: true })
-
-      await downloadFile(SHERPA_BUILD.url, sherpaZip,
-        (pct, rcv, total) => send('setup:progress', { task: 'sherpa', pct, rcv, total })
-      )
-      send('setup:status', 'Extracting speaker-detection engine...')
-      extractArchive(sherpaZip, SHERPA_DIR)
-      try { fs.unlinkSync(sherpaZip) } catch {}
-      const cliPath = getDiarizeCli()
-      if (!cliPath) throw new Error(`sherpa-onnx-offline-speaker-diarization${EXE} not found after extraction`)
-      ensureExecutable(cliPath)
-      // The shared libs the CLI links against also need +x on Unix.
-      const libDir = getSherpaLibDir()
-      if (!IS_WIN && libDir && fs.existsSync(libDir)) {
-        try { for (const f of fs.readdirSync(libDir)) ensureExecutable(path.join(libDir, f)) } catch {}
-      }
-      writeInstalled({ sherpa: CURRENT_VERSIONS.sherpa })
-    })
-  }
-
   // Download the pyannote segmentation model if needed
   if (needsSeg) {
     const segZip = path.join(APP_DATA, 'seg-model.tar.bz2')
@@ -606,16 +550,15 @@ async function setupWhisper(win) {
   const finalFfmpeg = getFFmpeg()
   const finalModel = getModel()
   const finalVad = getVadModel()
-  const finalDiarize = getDiarizeCli()
   const finalSeg = getSegModel()
   const finalEmbed = getEmbedModel()
   const allReady = fs.existsSync(finalCli) && !!finalFfmpeg && fs.existsSync(finalModel) && fs.existsSync(finalVad) &&
-    !!finalDiarize && fs.existsSync(finalSeg) && fs.existsSync(finalEmbed)
+    fs.existsSync(finalSeg) && fs.existsSync(finalEmbed)
   if (!allReady) send('setup:status', 'Setup incomplete — one or more components failed to install. Click Setup again to retry.')
   send('setup:done', {
     whisperCli: finalCli, ffmpeg: finalFfmpeg, model: finalModel, vadModel: finalVad, gpu,
     whisperHasGpu: getWhisperHasGpu(), ready: allReady,
-    diarizeCli: finalDiarize, segModel: finalSeg, embedModel: finalEmbed,
+    segModel: finalSeg, embedModel: finalEmbed,
   })
 }
 
@@ -702,7 +645,7 @@ ipcMain.handle('setup:removeData', async () => {
     detail: 'Deletes the Whisper engine, FFmpeg, and the model (~1.6 GB) from ~/.whisper-app. Your transcription catalog is kept, and you can re-download anytime from Setup.',
   })
   if (response !== 1) return { ok: false, canceled: true }
-  for (const target of [WHISPER_DIR, FFMPEG_DIR, MODELS_DIR, SHERPA_DIR, WHISPER_GPU_FLAG, INSTALLED_FILE]) {
+  for (const target of [WHISPER_DIR, FFMPEG_DIR, MODELS_DIR, WHISPER_GPU_FLAG, INSTALLED_FILE]) {
     try { if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true }) } catch {}
   }
   return { ok: true }
@@ -714,14 +657,13 @@ ipcMain.handle('setup:check', async () => {
   const ffmpeg = getFFmpeg()
   const model = getModel()
   const vadModel = getVadModel()
-  const diarizeCli = getDiarizeCli()
   const segModel = getSegModel()
   const embedModel = getEmbedModel()
   const gpu = detectGPU()
   const filesExist = fs.existsSync(whisperCli) && !!ffmpeg && fs.existsSync(model) && fs.existsSync(vadModel) &&
-    !!diarizeCli && fs.existsSync(segModel) && fs.existsSync(embedModel)
+    fs.existsSync(segModel) && fs.existsSync(embedModel)
   const versionsCurrent = isCurrent('whisper') && isCurrent('ffmpeg') && isCurrent('model') && isCurrent('vad') &&
-    isCurrent('sherpa') && isCurrent('segModel') && isCurrent('embedModel')
+    isCurrent('segModel') && isCurrent('embedModel')
   return {
     // Ready only when everything is present AND current — an outdated component
     // routes the user back to Setup, which then re-downloads just that piece.
@@ -731,7 +673,6 @@ ipcMain.handle('setup:check', async () => {
     ffmpeg,
     model,
     vadModel,
-    diarizeCli,
     segModel,
     embedModel,
     gpu,
@@ -805,94 +746,80 @@ function speakerPrefix(line) {
   return line && line.speaker ? `Speaker ${line.speaker}: ` : ''
 }
 
-// Run sherpa-onnx offline speaker diarization on a 16 kHz mono WAV and return
-// [{ startMs, endMs, speaker }] segments (speaker = raw 0-based sherpa id).
+// Absolute path to the diarization worker. In a packaged app it's asar-unpacked
+// (a plain-Node child can't read from inside app.asar), so rewrite the path.
+function getDiarizeWorker() {
+  const p = path.join(__dirname, 'diarize-worker.cjs')
+  return p.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`)
+}
+
+// Run speaker diarization on a 16 kHz mono WAV and return [{ startMs, endMs,
+// speaker }] segments (speaker = raw 0-based cluster id). Diarization runs in a
+// child Node process (electron/diarize-worker.cjs) that uses sherpa-onnx-node
+// for segmentation + embeddings and our own ward/AHC clustering — this separates
+// similar voices far better than sherpa's built-in greedy clustering.
 // Best-effort: any failure resolves to [] so it can never break a transcription.
 function runDiarization(wavPath, config, filePath, send) {
   return new Promise(resolve => {
-    const cli = config.diarizeCli
     const seg = config.segModel
     const embed = config.embedModel
-    if (!cli || !seg || !embed || !fs.existsSync(cli) || !fs.existsSync(seg) || !fs.existsSync(embed)) {
-      send('transcribe:log', '[diarize] speaker-detection components missing — skipping (re-run Setup)')
+    if (!seg || !embed || !fs.existsSync(seg) || !fs.existsSync(embed)) {
+      send('transcribe:log', '[diarize] speaker-detection models missing — skipping (re-run Setup)')
       return resolve([])
     }
 
-    // A fixed speaker count (>0) is far more accurate than auto-clustering when
-    // the user knows it; otherwise fall back to threshold-based auto detection.
-    // The CLI default (0.5) over-splits real-world audio into too many speakers;
-    // a higher threshold yields fewer, more realistic clusters. The user can tune
-    // it via the experimental sensitivity control (config.threshold); 0.7 default.
-    const nSpeakers = parseInt(config.speakers) || 0
-    const threshold = Number(config.threshold) > 0 ? Number(config.threshold) : 0.7
-    const clusterArg = nSpeakers > 0
-      ? `--clustering.num-clusters=${nSpeakers}`
-      : `--clustering.cluster-threshold=${threshold}`
-    const threads = Math.max(1, Math.min(8, os.cpus()?.length || 2))
-    // min-duration-on drops sub-0.5s blips; min-duration-off merges same-speaker
-    // segments split by gaps under 1s. Both cut the spurious short flip-flops that
-    // plague similar-sounding voices — measured ~35% fewer speaker switches vs the
-    // 0.3/0.5 CLI defaults, without noticeably merging genuine quick exchanges.
-    const args = [
-      `--segmentation.pyannote-model=${seg}`,
-      `--embedding.model=${embed}`,
-      clusterArg,
-      '--min-duration-on=0.5',
-      '--min-duration-off=1.0',
-      // Thread count is per-model in this CLI — there is no top-level
-      // --num-threads (passing one makes it exit with "Invalid option").
-      `--segmentation.num-threads=${threads}`,
-      `--embedding.num-threads=${threads}`,
+    // Fixed speaker count (>0) clusters to exactly that many; otherwise the
+    // worker estimates the count and re-clusters. threshold tunes auto detection.
+    const job = {
       wavPath,
-    ]
-
-    // The CLI links shared libs shipped alongside it. Put that dir on the loader
-    // path (and cwd there) so it resolves them at spawn time.
-    const libDir = getSherpaLibDir()
-    const env = { ...process.env }
-    if (libDir) {
-      if (IS_MAC) env.DYLD_LIBRARY_PATH = `${libDir}${path.delimiter}${env.DYLD_LIBRARY_PATH || ''}`
-      else if (IS_LINUX) env.LD_LIBRARY_PATH = `${libDir}${path.delimiter}${env.LD_LIBRARY_PATH || ''}`
+      segModel: seg,
+      embedModel: embed,
+      numSpeakers: parseInt(config.speakers) || 0,
+      threshold: Number(config.threshold) > 0 ? Number(config.threshold) : 0.7,
+      minDurationOn: 0.5,
+      minDurationOff: 1.0,
+      numThreads: Math.max(1, Math.min(8, os.cpus()?.length || 2)),
     }
 
-    send('transcribe:log', `[diarize] spawn: ${path.basename(cli)} ${args.join(' ')}`)
+    const worker = getDiarizeWorker()
+    send('transcribe:log', `[diarize] spawn worker: ${path.basename(worker)} (${job.numSpeakers > 0 ? job.numSpeakers + ' speakers' : 'auto'})`)
     let proc
     try {
-      proc = spawn(cli, args, { cwd: libDir || path.dirname(cli), env })
+      // ELECTRON_RUN_AS_NODE makes the Electron binary behave as plain Node so the
+      // worker can require the native sherpa-onnx-node addon.
+      proc = spawn(process.execPath, [worker, JSON.stringify(job)], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      })
     } catch (e) {
-      send('transcribe:log', `[diarize] failed to start: ${e.message}`)
+      send('transcribe:log', `[diarize] failed to start worker: ${e.message}`)
       return resolve([])
     }
     currentProc = proc
 
-    const segments = []
     let out = ''
-    const parse = (text) => {
-      out += text
-      text.split('\n').filter(l => l.trim()).forEach(l => send('transcribe:log', `[diarize] ${l.trim()}`))
-      // Drive the "Detecting speakers" loading bar off the CLI's own progress
-      // ("progress 8.67%"). Take the last match in the chunk so bursts don't lag.
-      const progMatches = [...text.matchAll(/progress\s*([\d.]+)\s*%/gi)]
-      if (progMatches.length) {
-        const pct = parseFloat(progMatches[progMatches.length - 1][1])
-        if (!Number.isNaN(pct)) send('transcribe:diarizeProgress', { file: filePath, progress: Math.round(pct) })
-      }
-      const re = /([\d.]+)\s*--\s*([\d.]+)\s*speaker_(\d+)/g
-      let m
-      while ((m = re.exec(text)) !== null) {
-        segments.push({
-          startMs: Math.round(parseFloat(m[1]) * 1000),
-          endMs: Math.round(parseFloat(m[2]) * 1000),
-          speaker: parseInt(m[3]),
-        })
-      }
-    }
-    proc.stdout.on('data', d => parse(d.toString()))
-    proc.stderr.on('data', d => parse(d.toString()))
-    proc.on('error', e => { currentProc = null; send('transcribe:log', `[diarize] error: ${e.message}`); resolve([]) })
+    proc.stdout.on('data', d => { out += d.toString() })
+    proc.stderr.on('data', d => {
+      d.toString().split('\n').filter(l => l.trim()).forEach(l => {
+        const m = l.match(/^PROGRESS\s+(\d+)/)
+        if (m) send('transcribe:diarizeProgress', { file: filePath, progress: parseInt(m[1]) })
+        else send('transcribe:log', `[diarize] ${l.trim()}`)
+      })
+    })
+    proc.on('error', e => { currentProc = null; send('transcribe:log', `[diarize] worker error: ${e.message}`); resolve([]) })
     proc.on('close', code => {
       currentProc = null
-      send('transcribe:log', `[diarize] exit code ${code} — ${segments.length} segment(s)`)
+      let segments = []
+      try {
+        const parsed = JSON.parse(out.trim() || '{}')
+        segments = (parsed.segments || []).map(s => ({
+          startMs: Math.round(s.start * 1000),
+          endMs: Math.round(s.end * 1000),
+          speaker: s.speaker,
+        }))
+      } catch (e) {
+        send('transcribe:log', `[diarize] could not parse worker output: ${e.message}`)
+      }
+      send('transcribe:log', `[diarize] worker exit ${code} — ${segments.length} segment(s)`)
       resolve(segments)
     })
   })
@@ -920,6 +847,130 @@ function assignSpeakers(lines, segments) {
     }
   }
   return lines
+}
+
+// Reconstruct word-level timestamps from whisper's full JSON (-ojf). Tokens are
+// merged into words on their leading space; offsets are absolute ms within the
+// segment wav, so `offsetMs` shifts a recovery-pass wav back onto the full
+// timeline. Returns [{ startMs, endMs, text }].
+function parseWordsFromWhisperJson(jsonPath, offsetMs) {
+  let data
+  try { data = JSON.parse(fs.readFileSync(jsonPath, 'utf8')) } catch { return [] }
+  const segs = data.transcription || []
+  const words = []
+  for (const s of segs) {
+    let buf = '', wStart = null, wEnd = null
+    const flush = () => {
+      const t = buf.trim()
+      if (t && wStart != null) words.push({ startMs: wStart + offsetMs, endMs: (wEnd ?? wStart) + offsetMs, text: t })
+      buf = ''; wStart = null; wEnd = null
+    }
+    for (const tk of (s.tokens || [])) {
+      const txt = tk.text || ''
+      if (/^\[.*\]$/.test(txt.trim())) continue // special tokens like [_BEG_], [_TT_..]
+      const off = tk.offsets || {}
+      if (txt.startsWith(' ') && buf) flush()
+      if (wStart == null) wStart = off.from ?? 0
+      buf += txt
+      wEnd = off.to ?? wStart
+    }
+    flush()
+  }
+  return words
+}
+
+function bestSpeakerRaw(startMs, endMs, segments) {
+  let best = null, bestOverlap = 0
+  for (const s of segments) {
+    const overlap = Math.min(endMs, s.endMs) - Math.max(startMs, s.startMs)
+    if (overlap > bestOverlap) { bestOverlap = overlap; best = s }
+  }
+  if (best) return best.speaker
+  // No overlap — the word sits in a gap (e.g. before the first turn). Snap it to
+  // the nearest segment in time so it inherits a neighbour's speaker rather than
+  // becoming a spurious unlabelled fragment.
+  let nearest = null, bestDist = Infinity
+  const mid = (startMs + endMs) / 2
+  for (const s of segments) {
+    const d = mid < s.startMs ? s.startMs - mid : mid > s.endMs ? mid - s.endMs : 0
+    if (d < bestDist) { bestDist = d; nearest = s }
+  }
+  return nearest ? nearest.speaker : null
+}
+
+// Word-level speaker attribution (WhisperX-style). Each word is assigned to the
+// diarized speaker it overlaps most; a transcript line is then split into
+// consecutive same-speaker runs, so a line straddling a turn boundary becomes
+// two correctly-labelled lines instead of one mislabelled one. Words are matched
+// to the original line text positionally (so the exact text is preserved) and any
+// line we can't align falls back to whole-line overlap. Returns a NEW line array.
+function attributeSpeakersWordLevel(lines, words, segments) {
+  if (!segments.length) return lines
+  if (!words.length) { assignSpeakers(lines, segments); return lines }
+
+  const wspk = words.map(w => ({ ...w, mid: (w.startMs + w.endMs) / 2, raw: bestSpeakerRaw(w.startMs, w.endMs, segments) }))
+  const remap = new Map()
+  let next = 1
+  const label = (raw) => {
+    if (raw == null) return undefined
+    if (!remap.has(raw)) remap.set(raw, next++)
+    return remap.get(raw)
+  }
+
+  const out = []
+  for (const line of lines) {
+    const startMs = srtTimeToMs(line.startRaw)
+    const endMs = srtTimeToMs(line.endRaw)
+    const ws = wspk.filter(w => w.mid >= startMs - 1 && w.mid <= endMs + 1)
+
+    // Greedily align each word to a position in the line's original text.
+    const lower = line.text.toLowerCase()
+    let cursor = 0
+    const aligned = []
+    for (const w of ws) {
+      const needle = w.text.toLowerCase()
+      const idx = needle ? lower.indexOf(needle, cursor) : -1
+      if (idx === -1) continue
+      aligned.push({ pos: idx, startMs: w.startMs, endMs: w.endMs, raw: w.raw })
+      cursor = idx + needle.length
+    }
+
+    if (!aligned.length) {
+      out.push({ ...line, speaker: label(bestSpeakerRaw(startMs, endMs, segments)) })
+      continue
+    }
+
+    // Group consecutive aligned words that share a speaker.
+    const groups = []
+    for (const a of aligned) {
+      const last = groups[groups.length - 1]
+      if (last && last.raw === a.raw) { last.endMs = a.endMs }
+      else groups.push({ raw: a.raw, pos: a.pos, startMs: a.startMs, endMs: a.endMs })
+    }
+
+    if (groups.length === 1) {
+      out.push({ ...line, speaker: label(groups[0].raw) })
+      continue
+    }
+
+    // Split the original line text at each group boundary, preserving text exactly.
+    for (let g = 0; g < groups.length; g++) {
+      const cutStart = g === 0 ? 0 : groups[g].pos
+      const cutEnd = g === groups.length - 1 ? line.text.length : groups[g + 1].pos
+      const text = line.text.slice(cutStart, cutEnd).trim()
+      if (!text) continue
+      const segStart = g === 0 ? Math.min(startMs, groups[g].startMs) : groups[g].startMs
+      const segEnd = g === groups.length - 1 ? Math.max(endMs, groups[g].endMs) : groups[g].endMs
+      out.push({
+        time: msToDisplayTime(segStart),
+        startRaw: msToSrtTime(segStart),
+        endRaw: msToSrtTime(segEnd),
+        text,
+        speaker: label(groups[g].raw),
+      })
+    }
+  }
+  return out
 }
 
 ipcMain.handle('transcribe:start', async (event, { files, config }) => {
@@ -981,6 +1032,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
     send('transcribe:file', { file: filePath, status: 'transcribing' })
 
     const allLines = []
+    const allWords = [] // word-level timestamps (only collected when diarizing)
     let offsetMs = 0
     let whisperExitCode = null
     let fileStalled = false
@@ -1013,6 +1065,11 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
       let hallucinationAtMs = null
       let passStalled = false
       whisperExitCode = null
+      // When diarizing, also emit whisper's full JSON so we get word-level
+      // timestamps for speaker attribution. Written to a temp base per pass.
+      const jsonBase = config.detectSpeakers
+        ? path.join(os.tmpdir(), `whisperwords_${Date.now()}_${skip}`)
+        : null
 
       await new Promise(resolve => {
         // Vulkan build auto-detects GPU; only pass -ng to force CPU when no GPU build
@@ -1036,9 +1093,10 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         }
         // Note: no --entropy-thold here — it only gates the temperature fallback,
         // which --no-fallback disables, so setting it would have no effect.
+        const jsonArgs = jsonBase ? ['-ojf', '-of', jsonBase] : []
         const args = ['-m', model, '-l', lang, '-f', segWav,
           '--no-speech-thold', '0.3',
-          '--no-fallback', '--print-progress', ...gpuArgs, ...vadArgs]
+          '--no-fallback', '--print-progress', ...gpuArgs, ...vadArgs, ...jsonArgs]
         send('transcribe:log', `[whisper] spawn (pass ${skip + 1}): whisper-cli ${args.join(' ')}`)
         const proc = spawn(whisperCli, args)
         currentProc = proc
@@ -1112,6 +1170,15 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
 
       if (tempSeg && fs.existsSync(tempSeg)) try { fs.unlinkSync(tempSeg) } catch {}
 
+      // Collect word timestamps from this pass's JSON, shifted onto the full
+      // timeline by offsetMs, then discard the temp file.
+      if (jsonBase) {
+        const jp = jsonBase + '.json'
+        try {
+          if (fs.existsSync(jp)) { allWords.push(...parseWordsFromWhisperJson(jp, offsetMs)); fs.unlinkSync(jp) }
+        } catch {}
+      }
+
       allLines.push(...runLines)
 
       // Write SRT after every pass so partial results are always saved
@@ -1148,7 +1215,13 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
       send('transcribe:log', '[diarize] detecting speakers...')
       const segments = await runDiarization(wavPath, config, filePath, send)
       if (!stopRequested && segments.length > 0) {
-        assignSpeakers(allLines, segments)
+        // Word-level attribution: split lines at speaker turns using the word
+        // timestamps. Replace allLines in place so downstream (catalog entry,
+        // SRT) uses the split, correctly-labelled lines.
+        const labelled = attributeSpeakersWordLevel(allLines, allWords, segments)
+        send('transcribe:log', `[diarize] word-level attribution: ${allLines.length} → ${labelled.length} line(s) across ${allWords.length} words`)
+        allLines.length = 0
+        allLines.push(...labelled)
         const srt = allLines.map((l, i) => `${i + 1}\n${l.startRaw} --> ${l.endRaw}\n${speakerPrefix(l)}${l.text}`).join('\n\n')
         try { fs.writeFileSync(finalSrt, srt, 'utf8') } catch {}
         try { fs.writeFileSync(finalTxt, allLines.map(l => `${speakerPrefix(l)}${l.text}`).join('\n'), 'utf8') } catch {}
@@ -1248,6 +1321,22 @@ ipcMain.handle('catalog:delete', (event, id) => {
   const catalog = loadCatalog().filter(e => e.id !== id)
   saveCatalog(catalog)
   return catalog
+})
+
+// Persist per-entry friendly speaker names ({ "1": "Alice", ... }). Blank names
+// are dropped so a speaker falls back to its default "Speaker N" label. Kept in
+// catalog.json (not the SRT), so the subtitle files stay portable and numeric.
+ipcMain.handle('catalog:setSpeakerNames', (event, { id, names }) => {
+  const catalog = loadCatalog()
+  const entry = catalog.find(e => e.id === id)
+  if (!entry) return { ok: false }
+  const clean = {}
+  for (const [k, v] of Object.entries(names || {})) {
+    if (v && String(v).trim()) clean[k] = String(v).trim()
+  }
+  entry.speakerNames = clean
+  saveCatalog(catalog)
+  return { ok: true, speakerNames: clean }
 })
 
 ipcMain.handle('catalog:import', async () => {
@@ -1377,12 +1466,11 @@ ipcMain.handle('catalog:redetectSpeakers', async (event, { id, speakers, thresho
   if (currentProc) return { ok: false, error: 'Engine is busy — wait for the current job to finish' }
 
   const ffmpeg = getFFmpeg()
-  const diarizeCli = getDiarizeCli()
   const segModel = getSegModel()
   const embedModel = getEmbedModel()
   if (!ffmpeg) return { ok: false, error: 'ffmpeg missing — run Setup' }
-  if (!diarizeCli || !fs.existsSync(segModel) || !fs.existsSync(embedModel))
-    return { ok: false, error: 'Speaker-detection components missing — run Setup' }
+  if (!fs.existsSync(segModel) || !fs.existsSync(embedModel))
+    return { ok: false, error: 'Speaker-detection models missing — run Setup' }
 
   // Lines to relabel: prefer the on-disk SRT (authoritative timings), else the
   // stored catalog lines.
@@ -1408,7 +1496,7 @@ ipcMain.handle('catalog:redetectSpeakers', async (event, { id, speakers, thresho
   const diarSend = (ch, data) => {
     if (ch === 'transcribe:diarizeProgress') send('catalog:diarizeProgress', { id, progress: data.progress })
   }
-  const segments = await runDiarization(tmpWav, { diarizeCli, segModel, embedModel, speakers, threshold }, entry.filePath, diarSend)
+  const segments = await runDiarization(tmpWav, { segModel, embedModel, speakers, threshold }, entry.filePath, diarSend)
   try { if (fs.existsSync(tmpWav)) fs.unlinkSync(tmpWav) } catch {}
 
   if (!segments.length) return { ok: false, error: 'No speakers detected (or detection was cancelled)' }
