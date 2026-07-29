@@ -74,16 +74,17 @@ function InsertForm({ defaultTime, onAdd, onCancel }) {
 
 // Inline editor for a line: adjustable start/end timestamps, text, and delete.
 // Holds its own draft state so keystrokes don't re-render the full list.
-function LineEditor({ line, onSave, onDelete, onCancel }) {
+function LineEditor({ line, onSave, onDelete, onCancel, speakerIds = [], speakerNames = {} }) {
   const [start, setStart] = useState(srtToDisplay(line.startRaw))
   const [end, setEnd] = useState(srtToDisplay(line.endRaw))
   const [text, setText] = useState(line.text)
+  const [speaker, setSpeaker] = useState(line.speaker || 0) // 0 = no speaker
   const textRef = useRef(null)
   useEffect(() => {
     const el = textRef.current
     if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) }
   }, [])
-  const save = () => onSave({ start, end, text })
+  const save = () => onSave({ start, end, text, speaker })
   const onTimeKey = e => {
     if (e.key === 'Enter') { e.preventDefault(); save() }
     if (e.key === 'Escape') onCancel()
@@ -94,6 +95,20 @@ function LineEditor({ line, onSave, onDelete, onCancel }) {
         <input className="edit-time-input" value={start} onChange={e => setStart(e.target.value)} onKeyDown={onTimeKey} title="Start time" />
         <span className="edit-time-sep">→</span>
         <input className="edit-time-input" value={end} onChange={e => setEnd(e.target.value)} onKeyDown={onTimeKey} title="End time" />
+        {speakerIds.length > 0 && (
+          <select
+            className="edit-speaker-select"
+            value={speaker}
+            onChange={e => setSpeaker(Number(e.target.value))}
+            title="Speaker"
+          >
+            <option value={0}>No speaker</option>
+            {/* Include the line's current speaker even if it's not in the detected set. */}
+            {(speakerIds.includes(speaker) || !speaker ? speakerIds : [speaker, ...speakerIds]).map(id => (
+              <option key={id} value={id}>{speakerLabel(id, speakerNames)}</option>
+            ))}
+          </select>
+        )}
         <button className="edit-delete-btn" title="Delete this line" onClick={onDelete}><Trash2 size={12} /> Delete</button>
       </div>
       <textarea
@@ -134,6 +149,7 @@ export default function Catalog() {
   const [redetecting, setRedetecting] = useState(false)
   const [redetectProgress, setRedetectProgress] = useState(0)
   const [redetectError, setRedetectError] = useState(null)
+  const [speakerNames, setSpeakerNames] = useState({}) // { [number]: name }
   const [autoSave, setAutoSave] = useState(() => {
     try { return localStorage.getItem('catalogAutoSave') === '1' } catch { return false }
   })
@@ -192,6 +208,7 @@ export default function Catalog() {
   useEffect(() => {
     if (!selected) return
     let cancelled = false
+    setSpeakerNames(selected.speakerNames || {})
     window.api.file.readSrt(selected.srtPath).then(subs => {
       if (cancelled) return
       setSubtitles(subs)
@@ -201,6 +218,25 @@ export default function Catalog() {
     })
     return () => { cancelled = true }
   }, [selected])
+
+  // Distinct speakers actually present in the transcript, ascending.
+  const speakerIds = useMemo(
+    () => [...new Set(subtitles.map(s => s.speaker).filter(Boolean))].sort((a, b) => a - b),
+    [subtitles]
+  )
+
+  // Rename a speaker: update the label everywhere live, and persist to the
+  // catalog (blank clears back to the default "Speaker N").
+  const renameSpeaker = (id, name) => {
+    const next = { ...speakerNames, [id]: name }
+    if (!name.trim()) delete next[id]
+    setSpeakerNames(next)
+  }
+  const persistSpeakerNames = () => {
+    if (!selected) return
+    window.api.catalog.setSpeakerNames(selected.id, speakerNames)
+      .then(() => window.api.catalog.load().then(setItems))
+  }
 
   // Keep the active subtitle scrolled into view, but not while editing/inserting.
   useEffect(() => {
@@ -257,7 +293,7 @@ export default function Catalog() {
     }
   }
 
-  const saveEdit = (i, { start, end, text }) => {
+  const saveEdit = (i, { start, end, text, speaker }) => {
     // Blank lines inside a subtitle would split its block in the saved SRT
     const clean = text.split('\n').map(s => s.trim()).filter(Boolean).join('\n')
     const startRaw = parseUserTime(start)
@@ -265,9 +301,10 @@ export default function Catalog() {
     // Keep end after start so the cue and all downstream timing stay valid.
     if (srtToMs(endRaw) <= srtToMs(startRaw)) endRaw = msToSrtRaw(srtToMs(startRaw) + 2000)
     const finalText = clean || subtitles[i].text
+    const finalSpeaker = speaker || undefined // 0/none -> no speaker
     // Re-sort in case the start time moved the line relative to its neighbours.
     const updated = subtitles
-      .map((s, idx) => idx === i ? { ...s, text: finalText, startRaw, endRaw, time: srtToDisplay(startRaw) } : s)
+      .map((s, idx) => idx === i ? { ...s, text: finalText, startRaw, endRaw, time: srtToDisplay(startRaw), speaker: finalSpeaker } : s)
       .sort((a, b) => srtToMs(a.startRaw) - srtToMs(b.startRaw))
     setSubtitles(updated)
     setDirty(true)
@@ -536,6 +573,25 @@ export default function Catalog() {
               </div>
             </div>
 
+            {speakerIds.length > 0 && (
+              <div className="speaker-legend">
+                <span className="speaker-legend-title"><Users size={12} /> Speakers</span>
+                {speakerIds.map(id => (
+                  <div className="speaker-legend-item" key={id}>
+                    <span className="speaker-swatch" style={{ background: speakerColor(id) }} />
+                    <input
+                      className="speaker-name-input"
+                      value={speakerNames[id] || ''}
+                      placeholder={`Speaker ${id}`}
+                      onChange={e => renameSpeaker(id, e.target.value)}
+                      onBlur={persistSpeakerNames}
+                      onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="subtitle-panel" ref={subtitleRef}>
               {subtitles.length === 0 && (
                 <div className="no-subs">
@@ -554,6 +610,8 @@ export default function Catalog() {
                       onSave={vals => saveEdit(i, vals)}
                       onDelete={() => deleteLine(i)}
                       onCancel={endEditing}
+                      speakerIds={speakerIds}
+                      speakerNames={speakerNames}
                     />
                   ) : (
                     <div
@@ -574,7 +632,7 @@ export default function Catalog() {
                       <span className="sub-time">{line.time}</span>
                       {line.speaker && (
                         <span className="speaker-chip" style={{ '--speaker-color': speakerColor(line.speaker) }}>
-                          {speakerLabel(line.speaker)}
+                          {speakerLabel(line.speaker, speakerNames)}
                         </span>
                       )}
                       <span

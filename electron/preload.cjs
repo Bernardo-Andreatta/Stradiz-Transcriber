@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('api', {
     delete: (id) => ipcRenderer.invoke('catalog:delete', id),
     import: () => ipcRenderer.invoke('catalog:import'),
     redetectSpeakers: (id, opts) => ipcRenderer.invoke('catalog:redetectSpeakers', { id, ...opts }),
+    setSpeakerNames: (id, names) => ipcRenderer.invoke('catalog:setSpeakerNames', { id, names }),
     onDiarizeProgress: (cb) => ipcRenderer.on('catalog:diarizeProgress', (_, d) => cb(d)),
     removeDiarizeListeners: () => ipcRenderer.removeAllListeners('catalog:diarizeProgress'),
   },

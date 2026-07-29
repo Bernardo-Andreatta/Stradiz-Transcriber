@@ -145,9 +145,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-width: 780px;
+  /* Fill the available panel width so lines reflow with the section. */
   width: 100%;
-  margin: 0 auto;
 }
 
 .no-subs { color: var(--text-dim); font-size: 13px; padding: 20px 0; display: flex; align-items: center; gap: 10px; }
@@ -180,7 +179,7 @@
   flex-shrink: 0;
 }
 .sub-line:hover .sub-time, .sub-line.active .sub-time { color: var(--accent2); }
-.sub-text { font-size: 15px; line-height: 1.75; color: var(--text); flex: 1; }
+.sub-text { font-size: 15px; line-height: 1.75; color: var(--text); flex: 1; min-width: 0; }
 .sub-line.active .sub-text { color: #fff; }
 
 /* Re-detect speakers control in the player. */
@@ -233,6 +232,53 @@
 }
 .redetect-help { margin: 10px 0 0; font-size: 11px; line-height: 1.55; color: var(--text-dim); }
 .redetect-error { margin-top: 8px; font-size: 12px; color: var(--red); }
+
+/* Speaker rename legend above the subtitle list. */
+.speaker-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 10px 4px 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+.speaker-legend-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.speaker-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.speaker-swatch { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+.speaker-name-input {
+  width: 110px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.speaker-name-input:focus { outline: none; border-color: var(--accent); }
+
+/* Speaker picker inside the line editor. */
+.edit-speaker-select {
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.edit-speaker-select:hover { border-color: var(--accent); }
 
 /* Speaker label chip, colored per speaker via the --speaker-color custom prop. */
 .speaker-chip {

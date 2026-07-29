@@ -17,6 +17,10 @@ export function speakerColor(n) {
   return SPEAKER_COLORS[(n - 1) % SPEAKER_COLORS.length]
 }
 
-export function speakerLabel(n) {
-  return n ? `Speaker ${n}` : ''
+// Display label for a speaker. Falls back to "Speaker N" unless a custom name
+// has been set for that number in the optional names map ({ 1: 'Alice', … }).
+export function speakerLabel(n, names) {
+  if (!n) return ''
+  const custom = names && names[n]
+  return custom && String(custom).trim() ? custom : `Speaker ${n}`
 }
