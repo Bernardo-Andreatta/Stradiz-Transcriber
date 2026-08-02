@@ -66,6 +66,24 @@ chmod +x "Stradiz Transcriber-x86_64.AppImage"
 
 First launch pulls a CPU whisper.cpp build + FFmpeg + model. Transcription runs on the CPU (no GPU acceleration on Linux yet). Files are stored in `~/.whisper-app`; **Setup → Remove downloaded data** clears them.
 
+## Known issues
+
+### Windows may block the app or the transcription engine (unsigned build)
+
+The app and its whisper.cpp engine **aren't code-signed yet**, so Windows security features can flag or block them:
+
+- **SmartScreen** — on install you may see *"Windows protected your PC."* Click **More info → Run anyway**. The app is safe (fully open-source).
+- **Smart App Control (SAC)** — on newer Windows 11 machines with SAC enabled, transcription may fail to start with *"An Application Control policy has blocked this file"* (or the engine simply won't launch). SAC is stricter than SmartScreen and **blocks unsigned executables outright**. The app now surfaces a clear error in this case instead of hanging.
+
+  **To allow it:** open **Windows Security → App & browser control → Smart App Control**. If it's *On*, that's the blocker. You can also add `%USERPROFILE%\.whisper-app\` as an exclusion in your security software.
+  ⚠️ Note: Smart App Control can only be turned **off**, not back on, without resetting Windows — decide accordingly.
+
+The lasting fix is **code-signing the app and engine binaries** (e.g. Azure Trusted Signing or a Microsoft Store MSIX build). That's planned but not yet in place — it's the only reason these warnings appear.
+
+### macOS: unsigned / not notarized
+
+First launch is blocked as "damaged" or "unidentified developer." See [Troubleshooting](#macos-stradiz-transcriber-is-damaged-and-cant-be-opened-no-open-button) for the one-time unlock. Apple notarization is the lasting fix (not yet in place).
+
 ## Usage
 
 1. Go to **Transcribe**, click the drop zone to select any audio or video file (mp3, mp4, m4a, wav, mkv…)
@@ -94,6 +112,10 @@ The lasting fix is Apple notarization, which isn't in place yet — that's the o
 ### Windows: "Windows protected your PC" (SmartScreen)
 
 The installer isn't code-signed yet. Click **More info → Run anyway**.
+
+### Windows: transcription won't start / "An Application Control policy has blocked this file"
+
+This is **Smart App Control** (Windows 11) blocking the unsigned whisper engine from running — see [Known issues](#windows-may-block-the-app-or-the-transcription-engine-unsigned-build). Allow it via **Windows Security → App & browser control → Smart App Control**, or add `%USERPROFILE%\.whisper-app\` as a security exclusion.
 
 ### Setup download fails or stalls
 
