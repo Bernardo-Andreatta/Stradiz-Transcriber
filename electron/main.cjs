@@ -683,8 +683,14 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
     send('transcribe:file', { file: filePath, status: 'converting' })
     send('transcribe:log', `[ffmpeg] Converting: ${path.basename(filePath)}`)
     const convertOk = await new Promise(resolve => {
-      const ff = spawn(ffmpegExe, ['-i', filePath,
-        '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath, '-y'])
+      let ff
+      try {
+        ff = spawn(ffmpegExe, ['-i', filePath,
+          '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath, '-y'])
+      } catch (err) {
+        send('transcribe:log', `[ffmpeg] failed to start: ${err.message}`)
+        return resolve(false)
+      }
       currentProc = ff
       ff.stderr.on('data', d => send('transcribe:log', `[ffmpeg] ${d.toString().trim()}`))
       ff.on('close', code => { currentProc = null; send('transcribe:log', `[ffmpeg] exit code ${code}`); resolve(code === 0) })
@@ -707,6 +713,7 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
     let offsetMs = 0
     let whisperExitCode = null
     let fileStalled = false
+    let spawnFailed = false
     const INITIAL_SKIP_MS = 20000
     let skipMs = INITIAL_SKIP_MS
     for (let skip = 0; !stopRequested; skip++) {
@@ -716,10 +723,13 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
       if (skip > 0) {
         tempSeg = path.join(outDir, base + `_seg${skip}.wav`)
         await new Promise(resolve => {
-          const ff = spawn(ffmpegExe, [
-            '-ss', (offsetMs / 1000).toString(), '-i', wavPath,
-            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', tempSeg, '-y'
-          ])
+          let ff
+          try {
+            ff = spawn(ffmpegExe, [
+              '-ss', (offsetMs / 1000).toString(), '-i', wavPath,
+              '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', tempSeg, '-y'
+            ])
+          } catch { return resolve() }
           currentProc = ff
           ff.on('close', () => { currentProc = null; resolve() })
           ff.on('error', () => { currentProc = null; resolve() })
@@ -757,7 +767,17 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
           '--no-speech-thold', '0.3', '--entropy-thold', '2.8',
           '--no-fallback', '--print-progress', ...gpuArgs, ...vadArgs]
         send('transcribe:log', `[whisper] spawn (pass ${skip + 1}): whisper-cli ${args.join(' ')}`)
-        const proc = spawn(whisperCli, args)
+        // spawn can throw synchronously (e.g. EACCES / UNKNOWN when the engine is
+        // blocked by antivirus or missing) — never let that reject the handler and
+        // leave the UI stuck on "transcribing" with a dead Stop button.
+        let proc
+        try {
+          proc = spawn(whisperCli, args)
+        } catch (e) {
+          send('transcribe:log', `[whisper] failed to start: ${e.message}`)
+          spawnFailed = true
+          return resolve()
+        }
         currentProc = proc
 
         // Watchdog: whisper prints progress continuously, so a long gap with no
@@ -771,6 +791,15 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
             forceKill(proc)
           }
         }, 10000)
+
+        // Async spawn failures surface here rather than throwing (ENOENT/EACCES).
+        proc.on('error', (e) => {
+          clearInterval(watchdog)
+          currentProc = null
+          send('transcribe:log', `[whisper] failed to start: ${e.message}`)
+          spawnFailed = true
+          resolve()
+        })
 
         let rawOutput = ''
         const seen = new Set()
@@ -904,6 +933,17 @@ ipcMain.handle('transcribe:start', async (event, { files, config }) => {
         status: 'error',
         error: `Engine stalled — no output for ${WHISPER_STALL_MS / 1000}s.${allLines.length ? ' Partial result saved.' : ' Try again or use a shorter clip.'}`,
         entry,
+      })
+      continue
+    }
+
+    // Engine couldn't be launched at all (blocked/missing binary): report it
+    // clearly and move on so the run finishes instead of hanging.
+    if (spawnFailed) {
+      send('transcribe:file', {
+        file: filePath,
+        status: 'error',
+        error: 'Could not start the transcription engine — it was blocked from running (Windows Smart App Control / antivirus) or is missing. Allow whisper-cli in your security settings, or re-run Setup.',
       })
       continue
     }
