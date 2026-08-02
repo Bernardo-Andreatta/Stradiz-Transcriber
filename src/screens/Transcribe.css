@@ -41,7 +41,27 @@
 
 .file-list { display: flex; flex-direction: column; gap: 8px; flex: 1; overflow-y: auto; }
 
+/* Queue header: count + clear-all, above the file list. */
+.queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 2px 2px 6px;
+}
+.queue-clear {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.queue-clear:hover { color: var(--red); }
+
 .file-item {
+  position: relative;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -50,6 +70,22 @@
   flex-direction: column;
   gap: 4px;
 }
+.file-remove {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.file-item:hover .file-remove { opacity: 1; }
+.file-remove:hover { color: #fff; background: var(--red); }
 .file-item.transcribing { border-color: var(--accent); }
 .file-item.done { border-color: var(--green); }
 .file-item.error { border-color: var(--red); }
@@ -57,7 +93,7 @@
 .file-item.stopped { border-color: var(--text-dim); }
 .file-item.stopped .file-status { color: var(--text-dim); }
 
-.file-name { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-name { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 20px; }
 .file-status { font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; }
 
 .toggle-row {

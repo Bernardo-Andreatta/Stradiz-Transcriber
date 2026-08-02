@@ -67,9 +67,34 @@ export default function Transcribe({ config, onDone, hidden }) {
     return () => window.api.transcribe.removeAllListeners()
   }, [])
 
+  // Append to the queue, skipping paths already present (so re-picking or
+  // re-dropping the same file doesn't duplicate it).
+  const addFiles = (paths) => {
+    setFiles(prev => {
+      const seen = new Set(prev)
+      const next = [...prev]
+      for (const p of paths) { if (!seen.has(p)) { next.push(p); seen.add(p) } }
+      return next
+    })
+  }
+
+  const removeFile = (f) => {
+    setFiles(prev => prev.filter(x => x !== f))
+    setFileStates(prev => { const n = { ...prev }; delete n[f]; return n })
+    delete linesRef.current[f]
+  }
+
+  const clearFiles = () => {
+    setFiles([])
+    setFileStates({})
+    linesRef.current = {}
+    setLines({})
+  }
+
   const pickFiles = async () => {
+    if (running) return
     const picked = await window.api.dialog.openFiles()
-    if (picked && picked.length) setFiles(picked)
+    if (picked && picked.length) addFiles(picked)
   }
 
   const onDrop = (e) => {
@@ -79,7 +104,7 @@ export default function Transcribe({ config, onDone, hidden }) {
     const paths = Array.from(e.dataTransfer.files)
       .map(f => window.api.getPathForFile(f))
       .filter(p => p && ACCEPTED_EXT.includes(p.split('.').pop().toLowerCase()))
-    if (paths.length) setFiles(paths)
+    if (paths.length) addFiles(paths)
   }
 
   const onDragOver = (e) => {
@@ -104,8 +129,14 @@ export default function Transcribe({ config, onDone, hidden }) {
     linesRef.current = {}
     setLines({})
     setFileStates({})
-    await window.api.transcribe.start(files, { ...config, removeSilence, outputDir, language })
-    setRunning(false)
+    try {
+      await window.api.transcribe.start(files, { ...config, removeSilence, outputDir, language })
+    } catch (err) {
+      // Never leave the UI stuck on "Transcribing…" if the backend call rejects.
+      setDebugLogs(prev => [...prev, `[error] Transcription failed to run: ${err?.message || err}`])
+    } finally {
+      setRunning(false)
+    }
     onDone()
   }
 
@@ -129,9 +160,16 @@ export default function Transcribe({ config, onDone, hidden }) {
               <span className="drop-hint">mp3, mp4, m4a, wav, ogg, mkv…</span>
             </>
           ) : (
-            <span>{dragging ? 'Drop to replace selection' : `${files.length} file${files.length > 1 ? 's' : ''} selected — click or drop to change`}</span>
+            <span>{dragging ? 'Drop to add to queue' : running ? `${files.length} file${files.length > 1 ? 's' : ''} in queue` : `${files.length} file${files.length > 1 ? 's' : ''} queued — click or drop to add more`}</span>
           )}
         </div>
+
+        {files.length > 0 && (
+          <div className="queue-header">
+            <span>{files.length} file{files.length > 1 ? 's' : ''} in queue</span>
+            {!running && <button className="queue-clear" onClick={clearFiles}>Clear all</button>}
+          </div>
+        )}
 
         <div className="file-list">
           {files.map(f => {
@@ -139,6 +177,9 @@ export default function Transcribe({ config, onDone, hidden }) {
             const state = fileStates[f] || {}
             return (
               <div key={f} className={`file-item ${state.status || ''}`}>
+                {!running && (
+                  <button className="file-remove" onClick={() => removeFile(f)} title="Remove from queue"><X size={12} /></button>
+                )}
                 <span className="file-name">{name}</span>
                 <span className="file-status">
                   {state.status === 'converting' && <><Loader2 size={11} className="spin" /> Preparing audio…</>}
