@@ -16,7 +16,7 @@ The permanent fix for both is code-signing / notarization (Azure Trusted Signing
 
 ---
 
-## Unreleased
+## 1.0.9
 
 - **Batch queue** — files now accumulate in a queue (add via browse or drag-and-drop); remove individual files or clear all, then transcribe the whole queue in one run.
 - **Graceful engine-launch failures** — if the transcription engine can't start (e.g. blocked by Smart App Control/antivirus, or missing), the app now shows a clear error and stays responsive instead of freezing on "Transcribing…" with a dead Stop button.
